@@ -82,16 +82,16 @@ sudo cp target/release/pcurl /usr/local/bin/
 # Simple GET
 pcurl 'curl https://api.example.com/users/1'
 
-# POST with JSON
-pcurl 'curl -X POST https://api.example.com/users \
-  -H "Authorization: Bearer <token>" \
-  -d '"'{"name":"Juan","role":"admin"}'"'"''
+# POST with JSON (note the escaped inner quotes)
+pcurl "curl -X POST https://api.example.com/users \
+  -H 'Authorization: Bearer <token>' \
+  -d '{\"name\":\"Juan\",\"role\":\"admin\"}'"
 
 # With extra flags
 pcurl 'curl -L -k https://api.internal.com/health'
 pcurl 'curl -u user:password https://api.example.com/private'
 
-# Direct URL (adds -si automatically)
+# Direct URL (adds -i -s -N automatically)
 pcurl https://api.example.com/users/1
 ```
 
@@ -205,7 +205,7 @@ Example flow with `--verbose`:
 | `--no-color` | Disable colors (also via `NO_COLOR` env) |
 | `--doctor` | Diagnose installation and PATH |
 | `--update` | Update to latest version via install.sh |
-| `--version` / `-V` | Show version (checks for updates) |
+| `--version` / `-V` | Show version |
 | `--help` / `-h` | Show help |
 
 ---
@@ -229,8 +229,8 @@ support WebSocket and requires learning its own request format.
 
 `pcurl` checks for newer versions automatically:
 
-- **On `--version`**: Shows current version and alerts if a newer one exists
-- **On every HTTP request**: Silent background check; prints a notice if outdated
+- **After each successful run** (HTTP, WebSocket, MCP): a silent check runs and prints a notice if a newer release exists
+- **`--version` / `--help`**: print and exit immediately — no update check
 - **`--update`**: Runs the installer to update to the latest release
 - **`--doctor`**: Diagnoses installation issues (binary location, PATH, curl dependency, connectivity)
 
