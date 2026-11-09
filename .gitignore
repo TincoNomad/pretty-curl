@@ -18,6 +18,9 @@ Thumbs.db
 # Logs
 *.log
 
+# pcurl collections — env files may hold secrets (`pcurl run --env staging.env`)
+*.env
+
 # Backup files
 *.bak
 *.tmp

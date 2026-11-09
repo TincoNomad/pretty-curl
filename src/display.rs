@@ -41,7 +41,7 @@ pub fn display_status_and_headers(
             if let Some(pos) = line.find(':') {
                 let key = line[..pos].trim();
                 let val = line[pos + 1..].trim();
-                println!("  {:30} {}", key.cyan(), val.white());
+                println!("  {:30} {}", key.dimmed(), val);
             }
         }
         println!();
@@ -66,6 +66,29 @@ pub fn display_body_section(body: &str, mode: &crate::cli::OutputMode) {
 
     if !mode.body_only {
         println!();
+    }
+}
+
+/// Prints a `serde_json::Value` with the same palette as HTTP bodies.
+/// Used by MCP results so both paths look the same.
+pub fn display_json_value(value: &Value, mode: &crate::cli::OutputMode) {
+    print_json(value, 1, true, mode);
+    println!();
+}
+
+/// Structural anchor between responses in a collection run.
+/// The number is wayfinding; it is deliberately neutral, not a new hue.
+pub fn display_request_header(index: usize, total: usize, label: &str) {
+    println!();
+    if total > 1 {
+        println!(
+            "{} {} {}",
+            "▸".white().bold(),
+            format!("[{}/{}]", index, total).dimmed(),
+            label.white().bold()
+        );
+    } else {
+        println!("{} {}", "▸".white().bold(), label.white().bold());
     }
 }
 

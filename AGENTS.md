@@ -16,6 +16,29 @@
 - `--headers-only` - Show only headers
 - `--no-color` - Disable colors (also via `NO_COLOR` env)
 
+## Subcommands
+
+- `pcurl run [file] [--only <name>] [--env <file>] [--var k=v]` - Run a collection
+- `pcurl list [file]` - List requests in a collection
+- `pcurl save <name> "<curl…>" [--file <path>]` - Append a request to a collection
+- `pcurl ws <url>` / `pcurl wscat -c <url>` - WebSocket
+- `pcurl mcp <url> <method> <params>` - MCP JSON-RPC call
+
+## Collections
+
+Plain-text request collections (`src/collection.rs`). Format:
+
+```text
+@base = http://localhost:3000      # @name = value → variable
+## Group                            # ## → group label
+### request name                    # ### → request (curl may span lines with trailing \)
+curl {{base}}/users/1
+```
+
+- Variables substituted via `{{name}}` (single pass, no nesting).
+- `--env <file>` loads another `@name = value` file that overrides collection vars; `--var k=v` overrides inline.
+- Requests are raw curl commands → reuse `CurlCommand::parse` + `run_http_argument_mode`.
+
 ## Testing
 
 - `cargo test` - runs unit + integration tests
@@ -71,8 +94,10 @@
 - `src/main.rs` - Entry point, CLI dispatch, curl execution with **streaming** (`.spawn()` + `BufReader`)
   - `run_http_argument_mode()` - spawns curl, streams headers then body line-by-line
   - `run_pipe_mode()` - batch reads stdin, uses `display_response()`
+  - `run_collection()` / `list_collection()` / `save_request()` - collection subcommands
   - `run_mcp_mode()` - builds JSON-RPC and delegates to `execute_curl_and_stream()`
   - `execute_curl_and_stream()` - core streaming loop (used by HTTP + MCP modes)
+- `src/collection.rs` - Plain-text request collections: parse, `{{var}}` substitution, append
 - `src/cli.rs` - CLI definitions (clap derive structs: Cli, Commands, OutputMode)
 - `src/display.rs` - HTTP response parsing and display (status, headers, body, JSON, XML)
   - `display_response()` - batch display (pipe mode)

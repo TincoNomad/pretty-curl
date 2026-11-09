@@ -333,3 +333,69 @@ fn test_mcp_subcommand() {
 
     server.join().unwrap();
 }
+
+#[test]
+fn test_collection_save_list_and_run() {
+    let dir = std::env::temp_dir().join(format!("pcurl-collection-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("api.pcurl");
+
+    // save two requests (second goes into a group via a hand-written file)
+    let save = Command::new("./target/debug/pcurl")
+        .arg("save")
+        .arg("get user")
+        .arg("curl https://api.example.com/users/1")
+        .arg("--file")
+        .arg(&file)
+        .output()
+        .expect("Failed to run pcurl save");
+    assert!(save.status.success());
+
+    std::fs::write(
+        &file,
+        "@base = http://127.0.0.1:1\n\n### health\ncurl {{base}}/health\n",
+    )
+    .unwrap();
+
+    // list shows the request name and declares the group/section
+    let list = Command::new("./target/debug/pcurl")
+        .arg("list")
+        .arg(&file)
+        .output()
+        .expect("Failed to run pcurl list");
+    assert!(list.status.success());
+    let stdout = String::from_utf8_lossy(&list.stdout);
+    assert!(
+        stdout.contains("health"),
+        "list should show the request name"
+    );
+
+    // unknown --only is an error with the available names
+    let missing = Command::new("./target/debug/pcurl")
+        .args(["run"])
+        .arg(&file)
+        .args(["--only", "nope"])
+        .output()
+        .expect("Failed to run pcurl run");
+    assert!(!missing.status.success(), "unknown --only must fail");
+    let stderr = String::from_utf8_lossy(&missing.stderr);
+    assert!(
+        stderr.contains("no request named 'nope'"),
+        "should list available names"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_collection_missing_file_fails() {
+    let output = Command::new("./target/debug/pcurl")
+        .args(["list", "/nonexistent/definitely-missing.pcurl"])
+        .output()
+        .expect("Failed to run pcurl list");
+    assert!(
+        !output.status.success(),
+        "missing collection must exit non-zero"
+    );
+}

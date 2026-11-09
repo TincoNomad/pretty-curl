@@ -13,7 +13,7 @@ use clap::{Parser, Subcommand};
     author,
     about,
     long_about = None,
-    after_help = "EXAMPLES:\n  pcurl 'curl https://api.example.com/users/1'\n  pcurl 'curl -X POST https://api.example.com/users -H \"Content-Type: application/json\" -d \\'{}\\'\n  curl -si https://api.example.com/users | pcurl\n  pcurl ws ws://localhost:8080/chat\n  pcurl mcp http://localhost:8080/mcp/message tools/call '{\"name\":\"test\"}'",
+    after_help = "EXAMPLES:\n  pcurl 'curl https://api.example.com/users/1'\n  pcurl 'curl -X POST https://api.example.com/users -H \"Content-Type: application/json\" -d \\'{}\\'\n  curl -si https://api.example.com/users | pcurl\n  pcurl run api.pcurl --env staging.env\n  pcurl list api.pcurl\n  pcurl save \"get user\" 'curl https://api.example.com/users/1'\n  pcurl ws ws://localhost:8080/chat\n  pcurl mcp http://localhost:8080/mcp/message tools/call '{\"name\":\"test\"}'",
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -50,6 +50,45 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
+    /// Run every request in a collection file (or a single one with --only)
+    Run {
+        /// Collection file (see `pcurl list`)
+        #[arg(default_value = "pcurl.collection")]
+        file: String,
+
+        /// Run only the request with this exact name
+        #[arg(long)]
+        only: Option<String>,
+
+        /// Environment file with `@name = value` lines (overrides the collection's variables)
+        #[arg(long)]
+        env: Option<String>,
+
+        /// Override a variable (repeatable): --var key=value
+        #[arg(long = "var", value_name = "KEY=VALUE")]
+        vars: Vec<String>,
+    },
+
+    /// List the requests stored in a collection file
+    List {
+        /// Collection file
+        #[arg(default_value = "pcurl.collection")]
+        file: String,
+    },
+
+    /// Save a curl command as a named request in a collection file
+    Save {
+        /// Name of the request
+        name: String,
+
+        /// The curl command (quote it)
+        curl: String,
+
+        /// Collection file to append to
+        #[arg(long, default_value = "pcurl.collection")]
+        file: String,
+    },
+
     /// Connect to a WebSocket server interactively
     Ws {
         /// WebSocket URL (ws:// or wss://)

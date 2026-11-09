@@ -6,6 +6,7 @@ use std::thread;
 use std::time::Instant;
 
 mod cli;
+mod collection;
 mod curl_parser;
 mod display;
 mod help;
@@ -16,6 +17,7 @@ mod ws_client;
 
 use clap::Parser;
 use cli::{Cli, Commands, OutputMode};
+use collection::{Collection, Request};
 use curl_parser::CurlCommand;
 use display::display_response;
 use help::print_doctor;
@@ -44,8 +46,32 @@ fn main() {
         no_color,
     };
 
+    if no_color {
+        colored::control::set_override(false);
+    }
+
     // Dispatch by subcommand
     match cli.command {
+        // pcurl run api.pcurl [--only "get user"] [--env staging.env] [--var k=v]
+        Some(Commands::Run {
+            file,
+            only,
+            env,
+            vars,
+        }) => {
+            run_collection(&file, only.as_deref(), env.as_deref(), &vars, &output_mode);
+        }
+
+        // pcurl list api.pcurl
+        Some(Commands::List { file }) => {
+            list_collection(&file);
+        }
+
+        // pcurl save "get user" 'curl https://api.example.com/users/1'
+        Some(Commands::Save { name, curl, file }) => {
+            save_request(&name, &curl, &file);
+        }
+
         // pcurl ws wss://echo.websocket.org
         Some(Commands::Ws { url, verbose }) => {
             run_websocket(&url, verbose, &output_mode);
@@ -118,7 +144,7 @@ fn is_safe_url(url: &str) -> bool {
         || url.starts_with("file://")
 }
 
-fn run_http_argument_mode(command_str: &str, mode: &OutputMode) {
+fn run_http_argument_mode(command_str: &str, mode: &OutputMode) -> u16 {
     let parsed = CurlCommand::parse(command_str);
 
     if !parsed.url.is_empty() && !is_safe_url(&parsed.url) {
@@ -141,7 +167,168 @@ fn run_http_argument_mode(command_str: &str, mode: &OutputMode) {
         .unwrap_or(if parsed.data.is_some() { "POST" } else { "GET" });
     let curl_args = parsed.to_args_with_headers();
 
-    execute_curl_and_stream(&curl_args, &parsed.url, method_label, mode);
+    execute_curl_and_stream(&curl_args, &parsed.url, method_label, mode)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Collections
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn fail(message: &str) -> ! {
+    eprintln!("{} {}", "✗".red().bold(), message);
+    std::process::exit(1);
+}
+
+fn parse_cli_vars(vars: &[String]) -> Result<Vec<(String, String)>, String> {
+    vars.iter()
+        .map(|v| {
+            v.split_once('=')
+                .map(|(k, val)| (k.trim().to_string(), val.trim().to_string()))
+                .ok_or_else(|| format!("--var expects KEY=VALUE, got '{}'", v))
+        })
+        .collect()
+}
+
+fn merged_variables(
+    col: &Collection,
+    env: Option<&str>,
+    vars: &[String],
+) -> Result<Vec<(String, String)>, String> {
+    let mut merged = col.variables.clone();
+    if let Some(env_path) = env {
+        merged = collection::merge_vars(&merged, &Collection::load_vars(env_path)?);
+    }
+    Ok(collection::merge_vars(&merged, &parse_cli_vars(vars)?))
+}
+
+fn request_targets<'a>(
+    col: &'a Collection,
+    only: Option<&str>,
+) -> Result<Vec<&'a Request>, String> {
+    match only {
+        None => Ok(col.requests.iter().collect()),
+        Some(name) => match col.get(name) {
+            Some(r) => Ok(vec![r]),
+            None => {
+                let names: Vec<&str> = col.requests.iter().map(|r| r.name.as_str()).collect();
+                let available = if names.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    names.join(", ")
+                };
+                Err(format!(
+                    "no request named '{}'. Available: {}",
+                    name, available
+                ))
+            }
+        },
+    }
+}
+
+fn run_collection(
+    file: &str,
+    only: Option<&str>,
+    env: Option<&str>,
+    vars: &[String],
+    mode: &OutputMode,
+) {
+    let col = match Collection::load(file) {
+        Ok(c) => c,
+        Err(e) => fail(&e),
+    };
+
+    let merged = match merged_variables(&col, env, vars) {
+        Ok(v) => v,
+        Err(e) => fail(&e),
+    };
+
+    let targets = match request_targets(&col, only) {
+        Ok(t) => t,
+        Err(e) => fail(&e),
+    };
+
+    if targets.is_empty() {
+        fail(&format!("no requests in '{}'", file));
+    }
+
+    let total = targets.len();
+    let mut ok = 0usize;
+    let mut errors = 0usize;
+
+    for (index, req) in targets.iter().enumerate() {
+        let label = match &req.group {
+            Some(g) => format!("{} / {}", g, req.name),
+            None => req.name.clone(),
+        };
+        display::display_request_header(index + 1, total, &label);
+
+        let curl = collection::substitute(&req.curl, &merged);
+        let cmd = if curl.trim_start().starts_with("curl") {
+            curl
+        } else {
+            format!("curl -si {}", curl)
+        };
+
+        if (200..300).contains(&run_http_argument_mode(&cmd, mode)) {
+            ok += 1;
+        } else {
+            errors += 1;
+        }
+    }
+
+    if total > 1 {
+        println!();
+        let err_label = if errors == 1 { "error" } else { "errors" };
+        println!(
+            "{}",
+            format!("{} requests · {} OK · {} {}", total, ok, errors, err_label).dimmed()
+        );
+    }
+}
+
+fn list_collection(file: &str) {
+    let col = match Collection::load(file) {
+        Ok(c) => c,
+        Err(e) => fail(&e),
+    };
+
+    println!();
+    println!("{} {}", "collection".dimmed(), file.white().bold());
+
+    if col.requests.is_empty() {
+        println!(
+            "  {}",
+            "(no requests yet — add one with `pcurl save`)"
+                .dimmed()
+                .italic()
+        );
+        return;
+    }
+
+    let mut current_group: Option<&str> = None;
+    for req in &col.requests {
+        if req.group.as_deref() != current_group {
+            current_group = req.group.as_deref();
+            if let Some(g) = &req.group {
+                println!("\n{}", g.cyan().bold());
+            }
+        }
+        println!("  {}", req.name);
+    }
+
+    println!();
+    println!(
+        "{} {}",
+        "run one:".dimmed(),
+        format!("pcurl run {} --only \"<name>\"", file).cyan()
+    );
+}
+
+fn save_request(name: &str, curl: &str, file: &str) {
+    match collection::append_request(file, name, curl) {
+        Ok(()) => println!("{} saved '{}' to {}", "✓".green().bold(), name, file),
+        Err(e) => fail(&e),
+    }
 }
 
 fn run_mcp_mode(
@@ -267,6 +454,28 @@ fn run_mcp_direct(
     execute_curl_and_stream(&args, url, "MCP", mode);
 }
 
+/// MCP wraps tool results as `content: [{ type: "text", text: "<json string>" }]`.
+/// If that `text` parses as JSON, replace it with the parsed value so the
+/// pretty-printer shows a real object instead of one escaped green line.
+fn unwrap_mcp_content(result: &Value) -> Value {
+    let mut out = result.clone();
+    if let Some(items) = out.get_mut("content").and_then(Value::as_array_mut) {
+        for item in items.iter_mut() {
+            if item.get("type").and_then(Value::as_str) != Some("text") {
+                continue;
+            }
+            let parsed = item
+                .get("text")
+                .and_then(Value::as_str)
+                .and_then(|t| serde_json::from_str::<Value>(t).ok());
+            if let Some(parsed) = parsed {
+                item["text"] = parsed;
+            }
+        }
+    }
+    out
+}
+
 fn display_mcp_result(json: &Value, elapsed_ms: u128, mode: &OutputMode) {
     if let Some(result) = json.get("result") {
         println!(
@@ -280,11 +489,8 @@ fn display_mcp_result(json: &Value, elapsed_ms: u128, mode: &OutputMode) {
                 "{}",
                 "  ──────────────────────────────────────────────────────".dimmed()
             );
-            let formatted = serde_json::to_string_pretty(result).unwrap_or_default();
-            for line in formatted.lines() {
-                println!("  {}", line.white());
-            }
-            println!();
+            let value = unwrap_mcp_content(result);
+            display::display_json_value(&value, mode);
         }
     } else if let Some(error) = json.get("error") {
         println!("  {}  {}", "✗".red().bold(), "[ERROR]".red().bold());
@@ -312,13 +518,13 @@ fn execute_curl_and_stream(
     url_display: &str,
     method_display: &str,
     mode: &OutputMode,
-) {
+) -> u16 {
     println!();
     println!(
         "{} {} {}",
-        method_display.cyan().bold(),
+        method_display.white().bold(),
         "→".dimmed(),
-        url_display.white().bold()
+        url_display
     );
     println!("{}", "─".repeat(64).dimmed());
 
@@ -368,6 +574,7 @@ fn execute_curl_and_stream(
     let mut block = String::new();
     let mut status: u16 = 0;
     let mut is_sse = false;
+    let mut final_status: u16 = 0;
 
     loop {
         buf.clear();
@@ -396,6 +603,7 @@ fn execute_curl_and_stream(
                     display::display_status_and_headers(&block, start.elapsed().as_millis(), mode);
                     is_sse = display::is_sse_content_type(&block);
                     headers_displayed = true;
+                    final_status = status;
                     has_saved_redirect = false;
                     saved_redirect_headers.clear();
                     saved_redirect_body.clear();
@@ -467,6 +675,8 @@ fn execute_curl_and_stream(
             display::display_body_section(output, mode);
         }
     }
+
+    final_status
 }
 
 fn run_pipe_mode(mode: &OutputMode) {
@@ -591,5 +801,23 @@ mod tests {
                 no_color: false,
             },
         );
+    }
+
+    #[test]
+    fn test_unwrap_mcp_content_extracts_json_string() {
+        let result = serde_json::json!({
+            "content": [{ "type": "text", "text": "{\"total_ventas\":4}" }]
+        });
+        let out = crate::unwrap_mcp_content(&result);
+        assert_eq!(out["content"][0]["text"]["total_ventas"], 4);
+    }
+
+    #[test]
+    fn test_unwrap_mcp_content_keeps_plain_text() {
+        let result = serde_json::json!({
+            "content": [{ "type": "text", "text": "no soy json" }]
+        });
+        let out = crate::unwrap_mcp_content(&result);
+        assert_eq!(out["content"][0]["text"], "no soy json");
     }
 }

@@ -114,6 +114,45 @@ pcurl --no-color 'curl https://api.example.com/users/1'    # No colors (also res
 
 ---
 
+### Collections
+
+Group your requests in a plain-text file and stop retyping curl commands. A collection is just named curl commands plus variables:
+
+```text
+@base = http://localhost:3000
+@token = dev-token
+
+## Usuarios
+### get user
+curl {{base}}/users/1 -H "Authorization: Bearer {{token}}"
+
+### create user
+curl -X POST {{base}}/users -d '{"name":"Juan"}'
+```
+
+- `###` starts a named request, `##` a group (label only), `@name = value` a variable, `#` a comment.
+- A request's curl may span several lines with a trailing `\`.
+
+```bash
+pcurl list api.pcurl                                # show what's inside
+pcurl run api.pcurl                                 # run everything
+pcurl run api.pcurl --only "get user"               # run a single request
+pcurl run api.pcurl --env staging.env               # override variables (gitignore the secrets!)
+pcurl run api.pcurl --var base=http://localhost:9999  # override one variable inline
+pcurl save "get user" 'curl https://api.example.com/users/1'   # append a request
+```
+
+Environment files use the same `@name = value` syntax and override the collection's variables:
+
+```text
+@base = https://staging.example.com
+@token = staging-secret
+```
+
+Anything you can paste from your browser's **"Copy as cURL"** works as a request — no new syntax to learn.
+
+---
+
 ### WebSocket Mode
 
 ```bash
@@ -197,6 +236,9 @@ Example flow with `--verbose`:
 | Command / Flag | Description |
 |---|---|
 | `pcurl [FLAGS] [curl_command]` | HTTP mode (arg or pipe) |
+| `pcurl run [file] [--only <name>] [--env <file>] [--var k=v]` | Run a collection (default file: `pcurl.collection`) |
+| `pcurl list [file]` | List the requests in a collection |
+| `pcurl save <name> "<curl…>" [--file <path>]` | Append a request to a collection |
 | `pcurl ws <url> [--verbose]` | WebSocket native mode |
 | `pcurl wscat -c <url> [--verbose]` | wscat-compatible alias |
 | `pcurl mcp <url> <method> <params> [--session-id <id>] [--verbose]` | MCP JSON-RPC call (full SSE cycle) |
@@ -260,6 +302,7 @@ PRs welcome. Code structure:
 
 - `src/main.rs` — Entry point, CLI dispatch (clap), curl execution
 - `src/cli.rs` — CLI definitions (clap derive structs)
+- `src/collection.rs` — Plain-text request collections (parsing, variables, save)
 - `src/curl_parser.rs` — curl command tokenization and reconstruction
 - `src/display.rs` — HTTP response parsing and display (status, headers, body, JSON, XML)
 - `src/mcp.rs` — MCP legacy helpers (JSON-RPC body, session persistence)
