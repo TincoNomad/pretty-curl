@@ -195,6 +195,7 @@ fn print_json(value: &Value, depth: usize, is_last: bool, mode: &crate::cli::Out
                 } else {
                     print!("{}{}", "{}".dimmed(), comma.dimmed());
                 }
+                println!();
                 return;
             }
             if mode.no_color {
@@ -227,6 +228,7 @@ fn print_json(value: &Value, depth: usize, is_last: bool, mode: &crate::cli::Out
                 } else {
                     print!("{}{}", "[]".dimmed(), comma.dimmed());
                 }
+                println!();
                 return;
             }
             if mode.no_color {

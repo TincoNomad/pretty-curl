@@ -1,6 +1,6 @@
 # pcurl
 
-HTTP pretty-printer for your terminal. Takes raw `curl` output and makes it readable — like Postman or Bruno, but without leaving your terminal.
+HTTP pretty-printer for your terminal. Takes raw `curl` output and makes it readable — like Postman or Bruno, but without leaving your terminal. Also runs plain-text collections (`pcurl run`) and MCP servers (`pcurl mcp`).
 
 ```
   ✓  HTTP/2 200 OK    142ms
@@ -116,7 +116,30 @@ pcurl --no-color 'curl https://api.example.com/users/1'    # No colors (also res
 
 ### Collections
 
-Group your requests in a plain-text file and stop retyping curl commands. A collection is just named curl commands plus variables:
+Group your requests in a plain-text file and stop retyping curl commands.
+
+#### Quick start
+
+```bash
+pcurl init            # creates .pcurl/ in the current project
+pcurl list            # see what's inside
+pcurl run             # run everything
+```
+
+`pcurl init` creates:
+
+```
+.pcurl/
+  collection.pcurl        # commit this
+  secrets/
+    .gitignore            # contains "*" — git ignores the whole folder
+    secrets.env           # API keys, passwords — never committed
+```
+
+The `secrets/.gitignore` with `*` means git ignores everything inside, even if
+your project has no rule for it. No discipline required.
+
+#### Format
 
 ```text
 @base = http://localhost:3000
@@ -132,22 +155,47 @@ curl -X POST {{base}}/users -d '{"name":"Juan"}'
 
 - `###` starts a named request, `##` a group (label only), `@name = value` a variable, `#` a comment.
 - A request's curl may span several lines with a trailing `\`.
+- A request can also be an MCP call: `mcp <url> <method> <json>`.
 
 ```bash
-pcurl list api.pcurl                                # show what's inside
-pcurl run api.pcurl                                 # run everything
-pcurl run api.pcurl --only "get user"               # run a single request
-pcurl run api.pcurl --env staging.env               # override variables (gitignore the secrets!)
-pcurl run api.pcurl --var base=http://localhost:9999  # override one variable inline
+pcurl list                                          # show what's inside
+pcurl run                                           # run everything
+pcurl run --only "get user"                         # run a single request
+pcurl run --var base=http://localhost:9999          # override one variable
 pcurl save "get user" 'curl https://api.example.com/users/1'   # append a request
 ```
 
-Environment files use the same `@name = value` syntax and override the collection's variables:
+The file is resolved as: explicit path → `.pcurl/collection.pcurl` → `./pcurl.collection`.
+
+#### Secrets and environments
+
+`.pcurl/secrets/secrets.env` is loaded automatically and overrides the collection's variables:
 
 ```text
 @base = https://staging.example.com
 @token = staging-secret
 ```
+
+For other environments use `--env`. It **replaces** the automatic file instead of
+merging, so you never mix a production URL with a development token:
+
+```bash
+pcurl run --env staging.env
+```
+
+Resolution order: collection variables → secrets (or `--env`) → `--var`.
+
+#### MCP requests inside a collection
+
+```text
+### stats
+mcp {{base}}/mcp/message tools/call {"name":"get_stats_summary","arguments":{}}
+```
+
+The line is read as `mcp <url> <method> <json>`; everything after the method is
+treated as JSON, so spaces inside it are safe. If a variable named
+`@authorization` exists, it is sent as the `Authorization` header — put it in
+`secrets.env`, not in the collection.
 
 Anything you can paste from your browser's **"Copy as cURL"** works as a request — no new syntax to learn.
 
@@ -204,12 +252,17 @@ pcurl mcp --session-id my-session http://localhost:8080/mcp/message resources/li
 
 # See the full handshake: SSE events, session info, initialize response
 pcurl mcp --verbose http://localhost:8080/mcp/message tools/call '{"name":"test"}'
+
+# Protected server: send a header on both the SSE stream and the POST
+pcurl mcp --header "Authorization: Bearer <token>" https://api.example.com/mcp/message tools/list '{}'
 ```
 
 Features:
 - **Full protocol cycle**: connects to `/mcp/sse`, obtains `session_id`, sends `initialize`, then your method
 - **JSON-RPC body** constructed automatically via `serde_json` (proper escaping, no injection)
 - **SSE kept open**: responses arrive through the live SSE stream, matched by JSON-RPC `id`
+- **Tool errors are reported**: a result with `isError: true` is shown as `✗ [ERROR]`, not as success
+- `--header "Key: Value"` (repeatable) is sent on **both** the SSE connection and the POST
 - **No globbing issues**: JSON params passed as single argument, safe from zsh expansion
 - `--session-id <id>` for explicit session control (direct POST, skips SSE)
 - `--verbose` shows SSE events, session info, initialize handshake, and server info
@@ -236,12 +289,13 @@ Example flow with `--verbose`:
 | Command / Flag | Description |
 |---|---|
 | `pcurl [FLAGS] [curl_command]` | HTTP mode (arg or pipe) |
-| `pcurl run [file] [--only <name>] [--env <file>] [--var k=v]` | Run a collection (default file: `pcurl.collection`) |
+| `pcurl init` | Create `.pcurl/` (collection + secrets folder) in the current project |
+| `pcurl run [file] [--only <name>] [--env <file>] [--var k=v]` | Run a collection (default: `.pcurl/collection.pcurl`) |
 | `pcurl list [file]` | List the requests in a collection |
 | `pcurl save <name> "<curl…>" [--file <path>]` | Append a request to a collection |
 | `pcurl ws <url> [--verbose]` | WebSocket native mode |
 | `pcurl wscat -c <url> [--verbose]` | wscat-compatible alias |
-| `pcurl mcp <url> <method> <params> [--session-id <id>] [--verbose]` | MCP JSON-RPC call (full SSE cycle) |
+| `pcurl mcp <url> <method> <params> [--header "K: V"] [--session-id <id>] [--verbose]` | MCP JSON-RPC call (full SSE cycle) |
 | `--body-only` | Show only response body |
 | `--headers-only` | Show only headers + status |
 | `--no-color` | Disable colors (also via `NO_COLOR` env) |
@@ -285,6 +339,7 @@ support WebSocket and requires learning its own request format.
 - **Auto-update**: Downloads and executes code from GitHub. If you don't trust this, use manual download or compile from source.
 - **Pipe mode**: `pcurl` only reads from stdin and displays output — it does not execute arbitrary code.
 - **Argument mode**: Passes arguments directly to `curl`. Be careful with untrusted input.
+- **Secrets**: keep API keys in `.pcurl/secrets/secrets.env`. `pcurl init` writes a `.gitignore` with `*` inside that folder, so git ignores it even if your project has no rule.
 - **For production use**: Review the code and consider security implications before use in sensitive environments.
 
 ### Safe Usage Guidelines

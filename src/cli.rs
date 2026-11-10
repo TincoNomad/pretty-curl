@@ -13,7 +13,7 @@ use clap::{Parser, Subcommand};
     author,
     about,
     long_about = None,
-    after_help = "EXAMPLES:\n  pcurl 'curl https://api.example.com/users/1'\n  pcurl 'curl -X POST https://api.example.com/users -H \"Content-Type: application/json\" -d \\'{}\\'\n  curl -si https://api.example.com/users | pcurl\n  pcurl run api.pcurl --env staging.env\n  pcurl list api.pcurl\n  pcurl save \"get user\" 'curl https://api.example.com/users/1'\n  pcurl ws ws://localhost:8080/chat\n  pcurl mcp http://localhost:8080/mcp/message tools/call '{\"name\":\"test\"}'",
+    after_help = "EXAMPLES:\n  pcurl 'curl https://api.example.com/users/1'\n  pcurl 'curl -X POST https://api.example.com/users -H \"Content-Type: application/json\" -d \\'{}\\'\n  curl -si https://api.example.com/users | pcurl\n  pcurl init\n  pcurl run --only \"health\"\n  pcurl list\n  pcurl save \"get user\" 'curl https://api.example.com/users/1'\n  pcurl ws ws://localhost:8080/chat\n  pcurl mcp http://localhost:8080/mcp/message tools/call '{\"name\":\"test\"}'",
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -50,11 +50,13 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
+    /// Create .pcurl/ in the current project (collection + secrets folder)
+    Init,
+
     /// Run every request in a collection file (or a single one with --only)
     Run {
-        /// Collection file (see `pcurl list`)
-        #[arg(default_value = "pcurl.collection")]
-        file: String,
+        /// Collection file (default: .pcurl/collection.pcurl, then ./pcurl.collection)
+        file: Option<String>,
 
         /// Run only the request with this exact name
         #[arg(long)]
@@ -71,9 +73,8 @@ pub enum Commands {
 
     /// List the requests stored in a collection file
     List {
-        /// Collection file
-        #[arg(default_value = "pcurl.collection")]
-        file: String,
+        /// Collection file (default: .pcurl/collection.pcurl, then ./pcurl.collection)
+        file: Option<String>,
     },
 
     /// Save a curl command as a named request in a collection file
@@ -85,8 +86,8 @@ pub enum Commands {
         curl: String,
 
         /// Collection file to append to
-        #[arg(long, default_value = "pcurl.collection")]
-        file: String,
+        #[arg(long)]
+        file: Option<String>,
     },
 
     /// Connect to a WebSocket server interactively
@@ -126,6 +127,10 @@ pub enum Commands {
         /// Session ID to reuse an existing session
         #[arg(long)]
         session_id: Option<String>,
+
+        /// Extra request header, sent on both SSE and POST (repeatable): --header "Authorization: Bearer <token>"
+        #[arg(long = "header", value_name = "KEY: VALUE")]
+        headers: Vec<String>,
 
         /// Show the internally constructed curl command
         #[arg(long)]

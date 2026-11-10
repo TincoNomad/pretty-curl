@@ -18,26 +18,40 @@
 
 ## Subcommands
 
+- `pcurl init` - Create `.pcurl/` (collection + secrets folder) in the current project
 - `pcurl run [file] [--only <name>] [--env <file>] [--var k=v]` - Run a collection
 - `pcurl list [file]` - List requests in a collection
 - `pcurl save <name> "<curl…>" [--file <path>]` - Append a request to a collection
 - `pcurl ws <url>` / `pcurl wscat -c <url>` - WebSocket
-- `pcurl mcp <url> <method> <params>` - MCP JSON-RPC call
+- `pcurl mcp <url> <method> <params> [--header "K: V"]` - MCP JSON-RPC call
 
 ## Collections
 
-Plain-text request collections (`src/collection.rs`). Format:
+Plain-text request collections (`src/collection.rs`). Layout created by `pcurl init`:
+
+```text
+.pcurl/
+  collection.pcurl        # commit this
+  secrets/
+    .gitignore            # contains "*" → git ignores the whole folder
+    secrets.env           # secrets, never committed
+```
+
+Format:
 
 ```text
 @base = http://localhost:3000      # @name = value → variable
 ## Group                            # ## → group label
-### request name                    # ### → request (curl may span lines with trailing \)
-curl {{base}}/users/1
+### request name                    # ### → request
+curl {{base}}/users/1              # a curl command...
+mcp {{base}}/mcp/message tools/call {"name":"x"}   # ...or an MCP call
 ```
 
 - Variables substituted via `{{name}}` (single pass, no nesting).
-- `--env <file>` loads another `@name = value` file that overrides collection vars; `--var k=v` overrides inline.
-- Requests are raw curl commands → reuse `CurlCommand::parse` + `run_http_argument_mode`.
+- Path resolution: explicit arg → `.pcurl/collection.pcurl` → `./pcurl.collection`.
+- `.pcurl/secrets/secrets.env` loads automatically; `--env <file>` **replaces** it (no stacking, so envs don't mix credentials); `--var k=v` wins.
+- `@authorization` is sent as the `Authorization` header on MCP requests.
+- Curl requests reuse `CurlCommand::parse` + `run_http_argument_mode`; MCP requests reuse `run_mcp_once`.
 
 ## Testing
 
@@ -82,7 +96,8 @@ curl {{base}}/users/1
 
 ### Architecture
 
-- `src/mcp_client.rs` — `McpClient` struct: `.connect(message_url, verbose)` → `.send_request(method, params)` → `.close()`
+- `src/mcp_client.rs` — `McpClient` struct: `.connect(message_url, headers, verbose)` → `.send_request(method, params)` → `.close()`
+  - `headers` (e.g. `Authorization: Bearer …`) are sent on both the SSE `curl` connection and the `ureq` POST
   - SSE reader thread sends parsed `SseEvent` (type + data) through `mpsc::channel`
   - `send_request()` POSTs via `ureq`, then blocks on channel until response with matching `id` arrives
   - Timeout: 10s for initial `session_id`, 30s for response  

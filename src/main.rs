@@ -1,6 +1,7 @@
 use colored::*;
 use serde_json::Value;
 use std::io::{self, BufRead, BufReader, IsTerminal, Read};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Instant;
@@ -52,24 +53,35 @@ fn main() {
 
     // Dispatch by subcommand
     match cli.command {
-        // pcurl run api.pcurl [--only "get user"] [--env staging.env] [--var k=v]
+        // pcurl init
+        Some(Commands::Init) => {
+            init_project();
+        }
+
+        // pcurl run [--only "get user"] [--env staging.env] [--var k=v]
         Some(Commands::Run {
             file,
             only,
             env,
             vars,
         }) => {
-            run_collection(&file, only.as_deref(), env.as_deref(), &vars, &output_mode);
+            run_collection(
+                &collection_path(file.as_deref()),
+                only.as_deref(),
+                env.as_deref(),
+                &vars,
+                &output_mode,
+            );
         }
 
-        // pcurl list api.pcurl
+        // pcurl list
         Some(Commands::List { file }) => {
-            list_collection(&file);
+            list_collection(&collection_path(file.as_deref()));
         }
 
         // pcurl save "get user" 'curl https://api.example.com/users/1'
         Some(Commands::Save { name, curl, file }) => {
-            save_request(&name, &curl, &file);
+            save_request(&name, &curl, &collection_path(file.as_deref()));
         }
 
         // pcurl ws wss://echo.websocket.org
@@ -88,9 +100,22 @@ fn main() {
             method,
             params,
             session_id,
+            headers,
             verbose,
         }) => {
-            run_mcp_mode(&url, &method, &params, session_id, verbose, &output_mode);
+            let parsed = match parse_headers(&headers) {
+                Ok(h) => h,
+                Err(e) => fail(&e),
+            };
+            run_mcp_mode(
+                &url,
+                &method,
+                &params,
+                session_id,
+                &parsed,
+                verbose,
+                &output_mode,
+            );
         }
 
         // No subcommand → HTTP mode
@@ -179,6 +204,80 @@ fn fail(message: &str) -> ! {
     std::process::exit(1);
 }
 
+fn fail_load(message: &str) -> ! {
+    eprintln!("{} {}", "✗".red().bold(), message);
+    if !Path::new(collection::DOT_DIR).exists() {
+        eprintln!(
+            "{}",
+            "hint: run `pcurl init` to create .pcurl/ in this project".dimmed()
+        );
+    }
+    std::process::exit(1);
+}
+
+/// Resolves the collection file: explicit path > `.pcurl/` > legacy `./pcurl.collection`.
+fn collection_path(explicit: Option<&str>) -> String {
+    if let Some(path) = explicit {
+        return path.to_string();
+    }
+    if Path::new(collection::COLLECTION_FILE).exists() {
+        return collection::COLLECTION_FILE.to_string();
+    }
+    if Path::new(collection::LEGACY_FILE).exists() {
+        return collection::LEGACY_FILE.to_string();
+    }
+    if Path::new(collection::DOT_DIR).is_dir() {
+        collection::COLLECTION_FILE.to_string()
+    } else {
+        collection::LEGACY_FILE.to_string()
+    }
+}
+
+fn init_project() {
+    match collection::init_skeleton() {
+        Ok(paths) => {
+            for path in paths {
+                println!("{} created {}", "✓".green().bold(), path);
+            }
+            println!();
+            println!(
+                "{}",
+                "next: edit .pcurl/collection.pcurl or run `pcurl save \"name\" \"curl ...\"`"
+                    .dimmed()
+            );
+            if !Path::new(".git").exists() {
+                println!(
+                    "{}",
+                    "note: not a git repo — .pcurl/secrets/.gitignore has no effect here".yellow()
+                );
+            }
+        }
+        Err(e) => fail(&e),
+    }
+}
+
+/// Splits a collection request that is an MCP call: `mcp <url> <method> <json>`.
+fn mcp_parts(request: &str) -> Option<(String, String, String)> {
+    let rest = request.trim_start().strip_prefix("mcp ")?;
+    let mut parts = rest.splitn(3, char::is_whitespace);
+    let url = parts.next()?.trim();
+    let method = parts.next()?.trim();
+    let params = parts.next().unwrap_or("{}").trim();
+    if url.is_empty() || method.is_empty() {
+        return None;
+    }
+    Some((url.to_string(), method.to_string(), params.to_string()))
+}
+
+/// `@authorization` (from the collection or the secrets file) becomes the
+/// Authorization header on MCP requests.
+fn auth_headers(vars: &[(String, String)]) -> Vec<String> {
+    vars.iter()
+        .find(|(key, _)| key == "authorization")
+        .map(|(_, value)| vec![format!("Authorization: {}", value)])
+        .unwrap_or_default()
+}
+
 fn parse_cli_vars(vars: &[String]) -> Result<Vec<(String, String)>, String> {
     vars.iter()
         .map(|v| {
@@ -197,6 +296,8 @@ fn merged_variables(
     let mut merged = col.variables.clone();
     if let Some(env_path) = env {
         merged = collection::merge_vars(&merged, &Collection::load_vars(env_path)?);
+    } else if Path::new(collection::SECRETS_FILE).exists() {
+        merged = collection::merge_vars(&merged, &Collection::load_vars(collection::SECRETS_FILE)?);
     }
     Ok(collection::merge_vars(&merged, &parse_cli_vars(vars)?))
 }
@@ -234,7 +335,7 @@ fn run_collection(
 ) {
     let col = match Collection::load(file) {
         Ok(c) => c,
-        Err(e) => fail(&e),
+        Err(e) => fail_load(&e),
     };
 
     let merged = match merged_variables(&col, env, vars) {
@@ -262,14 +363,20 @@ fn run_collection(
         };
         display::display_request_header(index + 1, total, &label);
 
-        let curl = collection::substitute(&req.curl, &merged);
-        let cmd = if curl.trim_start().starts_with("curl") {
-            curl
+        let body = collection::substitute(&req.curl, &merged);
+
+        let status = if let Some((url, method, params)) = mcp_parts(&body) {
+            run_mcp_request(&url, &method, &params, &auth_headers(&merged), mode)
         } else {
-            format!("curl -si {}", curl)
+            let cmd = if body.trim_start().starts_with("curl") {
+                body
+            } else {
+                format!("curl -si {}", body)
+            };
+            run_http_argument_mode(&cmd, mode)
         };
 
-        if (200..300).contains(&run_http_argument_mode(&cmd, mode)) {
+        if (200..300).contains(&status) {
             ok += 1;
         } else {
             errors += 1;
@@ -289,11 +396,19 @@ fn run_collection(
 fn list_collection(file: &str) {
     let col = match Collection::load(file) {
         Ok(c) => c,
-        Err(e) => fail(&e),
+        Err(e) => fail_load(&e),
     };
 
     println!();
     println!("{} {}", "collection".dimmed(), file.white().bold());
+
+    if Path::new(collection::SECRETS_FILE).exists() {
+        println!(
+            "  {} {}",
+            "secrets".dimmed(),
+            collection::SECRETS_FILE.dimmed()
+        );
+    }
 
     if col.requests.is_empty() {
         println!(
@@ -331,11 +446,21 @@ fn save_request(name: &str, curl: &str, file: &str) {
     }
 }
 
+fn parse_headers(headers: &[String]) -> Result<Vec<String>, String> {
+    for header in headers {
+        if !header.contains(':') {
+            return Err(format!("--header expects 'Key: Value', got '{}'", header));
+        }
+    }
+    Ok(headers.to_vec())
+}
+
 fn run_mcp_mode(
     url: &str,
     method: &str,
     params_str: &str,
     session_id: Option<String>,
+    headers: &[String],
     verbose: bool,
     mode: &OutputMode,
 ) {
@@ -349,19 +474,50 @@ fn run_mcp_mode(
 
     if let Some(sid) = session_id {
         run_mcp_direct(url, &sid, method, &params_value, verbose, mode);
-    } else {
-        run_mcp_sse(url, method, &params_value, verbose, mode);
+    } else if let Err(e) = run_mcp_once(url, method, &params_value, headers, verbose, mode) {
+        eprintln!("{} {}", "✗".red().bold(), e);
+        std::process::exit(1);
     }
 }
 
-fn run_mcp_sse(url: &str, method: &str, params: &Value, verbose: bool, mode: &OutputMode) {
-    let mut client = match McpClient::connect(url, verbose) {
-        Ok(c) => c,
+/// Runs an MCP call from a collection, never exiting the process: a failure is
+/// counted as an error instead of aborting the whole run.
+fn run_mcp_request(
+    url: &str,
+    method: &str,
+    params_str: &str,
+    headers: &[String],
+    mode: &OutputMode,
+) -> u16 {
+    let params = match serde_json::from_str::<Value>(params_str) {
+        Ok(v) => v,
         Err(e) => {
-            eprintln!("{} MCP connection failed: {}", "✗".red().bold(), e);
-            std::process::exit(1);
+            eprintln!("{} invalid JSON in MCP params: {}", "✗".red().bold(), e);
+            return 400;
         }
     };
+    match run_mcp_once(url, method, &params, headers, false, mode) {
+        Ok(status) => status,
+        Err(e) => {
+            eprintln!("{} {}", "✗".red().bold(), e);
+            500
+        }
+    }
+}
+
+/// Full SSE cycle: connect → session_id → initialize → method.
+/// Returns an HTTP-like status (2xx = tool ok, 5xx = tool error) so a
+/// collection run can count it without exiting the whole process.
+fn run_mcp_once(
+    url: &str,
+    method: &str,
+    params: &Value,
+    headers: &[String],
+    verbose: bool,
+    mode: &OutputMode,
+) -> Result<u16, String> {
+    let mut client = McpClient::connect(url, headers, verbose)
+        .map_err(|e| format!("MCP connection failed: {}", e))?;
 
     println!();
     println!(
@@ -401,24 +557,20 @@ fn run_mcp_sse(url: &str, method: &str, params: &Value, verbose: bool, mode: &Ou
             }
         }
         Err(e) => {
-            eprintln!("  {} Initialize failed: {}", "✗".red().bold(), e);
             client.close();
-            std::process::exit(1);
+            return Err(format!("Initialize failed: {}", e));
         }
     }
 
     let start = Instant::now();
     let result = client.send_request(method, params);
     let elapsed = start.elapsed().as_millis();
+    client.close();
 
     match result {
-        Ok(json) => display_mcp_result(&json, elapsed, mode),
-        Err(e) => {
-            eprintln!("  {} {}", "✗".red().bold(), e);
-        }
+        Ok(json) => Ok(display_mcp_result(&json, elapsed, mode)),
+        Err(e) => Err(e),
     }
-
-    client.close();
 }
 
 fn run_mcp_direct(
@@ -476,14 +628,30 @@ fn unwrap_mcp_content(result: &Value) -> Value {
     out
 }
 
-fn display_mcp_result(json: &Value, elapsed_ms: u128, mode: &OutputMode) {
+fn display_mcp_result(json: &Value, elapsed_ms: u128, mode: &OutputMode) -> u16 {
     if let Some(result) = json.get("result") {
-        println!(
-            "  {}  {}  {}",
-            "✓".green().bold(),
-            "[OK]".white().bold(),
-            format!("{} ms", elapsed_ms).dimmed()
-        );
+        // MCP reports tool failures as a successful response with `isError: true`.
+        let is_error = result
+            .get("isError")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+
+        if is_error {
+            println!(
+                "  {}  {}  {}",
+                "✗".red().bold(),
+                "[ERROR]".red().bold(),
+                format!("{} ms", elapsed_ms).dimmed()
+            );
+        } else {
+            println!(
+                "  {}  {}  {}",
+                "✓".green().bold(),
+                "[OK]".white().bold(),
+                format!("{} ms", elapsed_ms).dimmed()
+            );
+        }
+
         if !mode.headers_only {
             println!(
                 "{}",
@@ -491,6 +659,12 @@ fn display_mcp_result(json: &Value, elapsed_ms: u128, mode: &OutputMode) {
             );
             let value = unwrap_mcp_content(result);
             display::display_json_value(&value, mode);
+        }
+
+        if is_error {
+            500
+        } else {
+            200
         }
     } else if let Some(error) = json.get("error") {
         println!("  {}  {}", "✗".red().bold(), "[ERROR]".red().bold());
@@ -503,6 +677,7 @@ fn display_mcp_result(json: &Value, elapsed_ms: u128, mode: &OutputMode) {
             println!("  {}", line.red());
         }
         println!();
+        500
     } else if !mode.headers_only {
         println!(
             "  {}",
@@ -510,6 +685,9 @@ fn display_mcp_result(json: &Value, elapsed_ms: u128, mode: &OutputMode) {
                 .unwrap_or_default()
                 .white()
         );
+        0
+    } else {
+        0
     }
 }
 
@@ -819,5 +997,36 @@ mod tests {
         });
         let out = crate::unwrap_mcp_content(&result);
         assert_eq!(out["content"][0]["text"], "no soy json");
+    }
+
+    #[test]
+    fn test_mcp_parts_parses_a_collection_line() {
+        let (url, method, params) =
+            crate::mcp_parts("mcp http://x/mcp/message tools/call {\"name\":\"a b\"}").unwrap();
+        assert_eq!(url, "http://x/mcp/message");
+        assert_eq!(method, "tools/call");
+        assert_eq!(params, "{\"name\":\"a b\"}");
+    }
+
+    #[test]
+    fn test_mcp_parts_skips_curl_lines() {
+        assert!(crate::mcp_parts("curl https://example.com").is_none());
+        assert!(crate::mcp_parts("mcp").is_none());
+    }
+
+    #[test]
+    fn test_auth_headers_from_variable() {
+        let vars = vec![("authorization".to_string(), "Bearer abc".to_string())];
+        assert_eq!(
+            crate::auth_headers(&vars),
+            vec!["Authorization: Bearer abc".to_string()]
+        );
+        assert!(crate::auth_headers(&[]).is_empty());
+    }
+
+    #[test]
+    fn test_parse_headers_validates_colon() {
+        assert!(crate::parse_headers(&["A: b".to_string()]).is_ok());
+        assert!(crate::parse_headers(&["sin-dos-puntos".to_string()]).is_err());
     }
 }

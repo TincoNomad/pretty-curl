@@ -23,14 +23,22 @@ pub struct McpClient {
     sse_child: Option<Child>,
     next_id: u64,
     verbose: bool,
+    headers: Vec<String>,
 }
 
 impl McpClient {
-    pub fn connect(message_url: &str, verbose: bool) -> Result<Self, String> {
+    pub fn connect(message_url: &str, headers: &[String], verbose: bool) -> Result<Self, String> {
         let sse_url = message_url.replace("/mcp/message", "/mcp/sse");
 
+        let mut args = vec!["-s".to_string(), "-N".to_string()];
+        for header in headers {
+            args.push("-H".to_string());
+            args.push(header.clone());
+        }
+        args.push(sse_url.clone());
+
         let mut child = Command::new("curl")
-            .args(["-s", "-N", &sse_url])
+            .args(&args)
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
@@ -134,6 +142,7 @@ impl McpClient {
             sse_child: Some(child),
             next_id: 1,
             verbose,
+            headers: headers.to_vec(),
         })
     }
 
@@ -155,8 +164,13 @@ impl McpClient {
             eprintln!("  {} {}", "→".cyan(), body_str.yellow());
         }
 
-        let response = ureq::post(&self.message_url)
-            .set("Content-Type", "application/json")
+        let mut request = ureq::post(&self.message_url).set("Content-Type", "application/json");
+        for header in &self.headers {
+            if let Some((key, value)) = header.split_once(':') {
+                request = request.set(key.trim(), value.trim());
+            }
+        }
+        let response = request
             .send_string(&body_str)
             .map_err(|e| format!("POST failed: {}", e))?;
 

@@ -141,6 +141,60 @@ pub fn append_request(path: &str, name: &str, curl: &str) -> Result<(), String> 
     fs::write(path, text).map_err(|e| format!("cannot write '{}': {}", path, e))
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Project layout: .pcurl/collection.pcurl + .pcurl/secrets/
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub const DOT_DIR: &str = ".pcurl";
+pub const COLLECTION_FILE: &str = ".pcurl/collection.pcurl";
+pub const SECRETS_FILE: &str = ".pcurl/secrets/secrets.env";
+pub const LEGACY_FILE: &str = "pcurl.collection";
+
+const COLLECTION_TEMPLATE: &str = "\
+# One request per ### block. Run `pcurl list` to see them.
+@base = http://127.0.0.1:8080
+
+## Sistema
+### health
+curl {{base}}/health
+";
+
+const SECRETS_TEMPLATE: &str = "\
+# Secrets for this project. Never committed.
+# Loaded automatically and overrides the collection's variables.
+@token =
+";
+
+/// Creates `.pcurl/` with a collection and a self-ignoring secrets folder.
+pub fn init_skeleton() -> Result<Vec<String>, String> {
+    let dir = std::path::Path::new(DOT_DIR);
+    if dir.exists() {
+        return Err(format!("{} already exists — left untouched", DOT_DIR));
+    }
+
+    let secrets = dir.join("secrets");
+    fs::create_dir_all(&secrets)
+        .map_err(|e| format!("cannot create {}: {}", secrets.display(), e))?;
+
+    let collection = dir.join("collection.pcurl");
+    fs::write(&collection, COLLECTION_TEMPLATE)
+        .map_err(|e| format!("cannot write {}: {}", collection.display(), e))?;
+
+    // `*` makes git ignore everything inside, even if the project has no rule.
+    let ignore = secrets.join(".gitignore");
+    fs::write(&ignore, "*\n").map_err(|e| format!("cannot write {}: {}", ignore.display(), e))?;
+
+    let env = secrets.join("secrets.env");
+    fs::write(&env, SECRETS_TEMPLATE)
+        .map_err(|e| format!("cannot write {}: {}", env.display(), e))?;
+
+    Ok(vec![
+        collection.display().to_string(),
+        ignore.display().to_string(),
+        env.display().to_string(),
+    ])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
