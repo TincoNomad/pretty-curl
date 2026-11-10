@@ -27,7 +27,9 @@ pre-commit = ["cargo fmt -- --check", "cargo clippy -- -D warnings", "cargo test
 post-checkout = []
 post-commit = []
 post-merge = []
-pre-push = []
+# Same checks as CI, so a push cannot go out red. Uses the toolchain pinned in
+# rust-toolchain.toml, so local and CI agree on which lints exist.
+pre-push = ["cargo fmt -- --check", "cargo clippy -- -D warnings", "cargo test"]
 pre-rebase = []
 # Disabled because it slows down the build
 # pre-auto-gc = []

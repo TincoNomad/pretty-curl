@@ -1,0 +1,8 @@
+# Pinned toolchain: local builds and CI must use the exact same compiler,
+# otherwise a new clippy lint can pass locally and fail in CI.
+#
+# Bump this together with `.github/workflows/quality_checks.yml`
+# (the `dtolnay/rust-toolchain@<version>` ref).
+[toolchain]
+channel = "1.99.0"
+components = ["rustfmt", "clippy"]

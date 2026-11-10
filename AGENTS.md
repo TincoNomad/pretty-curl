@@ -6,6 +6,14 @@
 - `cargo run --bin pcurl -- [args]` - run with curl arguments (recommended)
 - `curl -si <url> | cargo run --bin pcurl --` - pipe mode
 
+## Toolchain and CI
+
+- Rust version is pinned in `rust-toolchain.toml` (currently `1.99.0`). CI uses the same version through the `dtolnay/rust-toolchain@<version>` ref in `.github/workflows/quality_checks.yml`.
+- When bumping Rust, change **both** files in the same commit; otherwise a new clippy lint can pass locally and fail in CI.
+- `Cargo.lock` is committed on purpose. pcurl is a binary, so CI must build with the exact dependency versions tested locally.
+- Pre-commit and pre-push run `cargo fmt -- --check`, `cargo clippy -- -D warnings`, `cargo test`.
+- Before a release, also run `cargo build --release` (CI does).
+
 ## CLI Options
 
 - `--help` / `-h` - Show help

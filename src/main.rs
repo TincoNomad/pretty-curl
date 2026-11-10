@@ -177,7 +177,7 @@ fn run_http_argument_mode(command_str: &str, mode: &OutputMode) -> u16 {
             "{} {}: URL protocol not allowed: {}",
             "❌".red().bold(),
             "Error".red().bold(),
-            &parsed.url.split(':').next().unwrap_or("unknown")
+            parsed.url.split(':').next().unwrap_or("unknown")
         );
         eprintln!(
             "{} Allowed protocols: http, https, ws, wss, ftp, file",

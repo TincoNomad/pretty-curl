@@ -1,7 +1,8 @@
 # Rust
 /target/
 **/*.rs.bk
-Cargo.lock
+# Cargo.lock IS committed on purpose: pcurl is a binary, so CI must build with
+# the exact dependency versions that were tested locally.
 
 # IDE
 .DS_Store
