@@ -28,8 +28,12 @@
 
 - `pcurl init` - Create `.pcurl/` (collection + secrets folder) in the current project
 - `pcurl run [file] [--only <name>] [--env <file>] [--var k=v]` - Run a collection
-- `pcurl list [file]` - List requests in a collection
-- `pcurl save <name> "<curl…>" [--file <path>]` - Append a request to a collection
+- `pcurl call <name> [--env <file>] [--var k=v]` - Run one saved request (same as `run --only`)
+- `pcurl list [file]` - List requests in a collection, with their HTTP method
+- `pcurl save <name> "<curl…>" [--group <g>] [--file <path>]` - Save a request, or update it if the name exists (`-` reads the curl from stdin, so a heredoc works)
+- `pcurl rm <name> [--file <path>]` - Delete a saved request
+- `pcurl set <key> <value> [--secret] [--file]` - Write `@key = value` into the collection or secrets
+- `pcurl unset <key> [--secret] [--file]` - Remove `@key` (fails when the key is not there)
 - `pcurl ws <url>` / `pcurl wscat -c <url>` - WebSocket
 - `pcurl mcp <url> <method> <params> [--header "K: V"]` - MCP JSON-RPC call
 
@@ -56,6 +60,9 @@ mcp {{base}}/mcp/message tools/call {"name":"x"}   # ...or an MCP call
 ```
 
 - Variables substituted via `{{name}}` (single pass, no nesting).
+- Substitution happens **per token**, after `CurlCommand` tokenizes (`parse_with_vars` in `src/curl_parser.rs`). Substituting the raw string first would let a value containing a quote inject curl flags (`-o`, `-d @file`), so `run_http_with_vars` is the only HTTP path. MCP lines are the exception: they have no shell quoting, so they substitute the raw string before `mcp_parts`. An undefined variable is reported on stderr instead of being sent literally.
+- A duplicated `@name` line: the **last** one wins, matching `merge_vars` and git's `--get`. `set`/`unset` are the CLI path to edit them, and `set` collapses duplicates into one line.
+- `###` request names are unique in practice: `save` upserts by name and moves the block, and `rm` deletes every block with that name. `call`/`--only` resolve the bare name **or** `group/name` (split on the last `/`), with the exact match winning; `list` prints the qualified name. `--group` appends at the end of that group, creating it at the bottom when missing; `upsert`/`rm` drop a group header left empty.
 - Path resolution: explicit arg → `.pcurl/collection.pcurl` → `./pcurl.collection`.
 - `.pcurl/secrets/secrets.env` loads automatically; `--env <file>` **replaces** it (no stacking, so envs don't mix credentials); `--var k=v` wins.
 - `@authorization` is sent as the `Authorization` header on MCP requests.
@@ -75,7 +82,11 @@ mcp {{base}}/mcp/message tools/call {"name":"x"}   # ...or an MCP call
 
 - Push a tag `v*` to trigger GitHub Actions release workflow
 - Builds for: Linux x64/ARM64, macOS x64/ARM64, Windows x64
-- Artifacts uploaded to GitHub Releases automatically
+- Artifacts uploaded to GitHub Releases automatically, plus a `SHA256SUMS` file generated in the same run
+- `install.sh` verifies the downloaded binary against `SHA256SUMS` and aborts on a mismatch; a release without the file only warns
+- `--update` fetches `install.sh` from the release **tag**, never from `main`, and pipes it to bash without `sh -c`
+- Bump the version in `Cargo.toml` and in the `install.sh` banner before tagging; run `cargo build --release` first
+- Before tagging: `cargo audit` must be clean (CI runs it too)
 
 ## WebSocket Support
 
@@ -160,8 +171,7 @@ mcp {{base}}/mcp/message tools/call {"name":"x"}   # ...or an MCP call
 - **New CLI flags**: Add field to `Cli` or variant to `Commands` in `src/cli.rs`
 - **Always test**: Add integration tests for new features
 - **Help auto-generated**: Customize via `#[command(...)]` attributes in `src/cli.rs`
-- **Version checking**: Uses `ureq` to query GitHub Releases API (`check_latest_version()` in `src/version.rs`)
-- **Silent update notification**: `check_for_update_notification()` in `src/version.rs` runs on every HTTP request
+- **Version checking**: `--version` / `-V` is the only place pcurl contacts GitHub. `check_latest_version()` in `src/version.rs` has a 2s timeout and `is_newer()` compares versions numerically. Nothing runs on other commands — do not move this back into `main`'s tail.
 
 ### Streaming architecture
 

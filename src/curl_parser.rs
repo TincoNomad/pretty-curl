@@ -10,7 +10,20 @@ pub struct CurlCommand {
 
 impl CurlCommand {
     pub fn parse(input: &str) -> Self {
-        let tokens = tokenize(input);
+        Self::from_tokens(tokenize(input))
+    }
+
+    /// Same as `parse`, but `{{name}}` is replaced **after** tokenizing. Doing it
+    /// before would let a value containing quotes inject extra curl flags.
+    pub fn parse_with_vars(input: &str, vars: &[(String, String)]) -> Self {
+        let tokens = tokenize(input)
+            .into_iter()
+            .map(|token| crate::collection::substitute(&token, vars))
+            .collect();
+        Self::from_tokens(tokens)
+    }
+
+    fn from_tokens(tokens: Vec<String>) -> Self {
         let mut iter = tokens.iter().peekable();
 
         // Skip 'curl' if present
@@ -315,5 +328,29 @@ mod tests {
             .filter(|arg| arg.contains("Content-Type"))
             .count();
         assert_eq!(content_type_count, 1);
+    }
+
+    #[test]
+    fn parse_with_vars_substitutes_inside_a_token() {
+        let vars = vec![("base".to_string(), "http://x".to_string())];
+        let parsed = CurlCommand::parse_with_vars("curl {{base}}/a -d '{{base}}'", &vars);
+
+        assert_eq!(parsed.url, "http://x/a");
+        assert_eq!(parsed.data.as_deref(), Some("http://x"));
+    }
+
+    #[test]
+    fn parse_with_vars_cannot_inject_flags() {
+        // Substituting after tokenizing means a quote in the value stays inside
+        // the argument instead of closing it and adding a new flag.
+        let vars = vec![("pw".to_string(), "x' -o /tmp/pwn '".to_string())];
+        let parsed = CurlCommand::parse_with_vars("curl http://x -d '{{pw}}'", &vars);
+
+        assert_eq!(parsed.data.as_deref(), Some("x' -o /tmp/pwn '"));
+        assert!(
+            parsed.extra_args.is_empty(),
+            "value injected flags: {:?}",
+            parsed.extra_args
+        );
     }
 }

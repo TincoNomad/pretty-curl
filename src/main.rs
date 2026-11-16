@@ -23,12 +23,24 @@ use curl_parser::CurlCommand;
 use display::display_response;
 use help::print_doctor;
 use mcp_client::McpClient;
-use version::{check_for_update_notification, update_pcurl};
+use version::{check_latest_version, is_newer, update_pcurl};
 
 fn main() {
+    // Rust ignores SIGPIPE by default, so writing to a closed pipe (`| head`)
+    // turns into a panic. Restoring the default makes the process die quietly,
+    // which is what every other CLI does.
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+
     let cli = Cli::parse();
 
-    // Special flags (doctor / update) take priority
+    // Special flags (version / doctor / update) take priority
+    if cli.version {
+        print_version();
+        return;
+    }
     if cli.doctor {
         print_doctor();
         return;
@@ -79,9 +91,56 @@ fn main() {
             list_collection(&collection_path(file.as_deref()));
         }
 
+        // pcurl call /auth/register [--var token=...]
+        Some(Commands::Call {
+            name,
+            env,
+            vars,
+            file,
+        }) => {
+            run_collection(
+                &collection_path(file.as_deref()),
+                Some(&name),
+                env.as_deref(),
+                &vars,
+                &output_mode,
+            );
+        }
+
         // pcurl save "get user" 'curl https://api.example.com/users/1'
-        Some(Commands::Save { name, curl, file }) => {
-            save_request(&name, &curl, &collection_path(file.as_deref()));
+        Some(Commands::Save {
+            name,
+            curl,
+            group,
+            file,
+        }) => {
+            save_request(
+                &name,
+                &curl,
+                group.as_deref(),
+                &collection_path(file.as_deref()),
+            );
+        }
+
+        // pcurl rm "get user"
+        Some(Commands::Rm { name, file }) => {
+            remove_request(&name, &collection_path(file.as_deref()));
+        }
+
+        // pcurl set base http://localhost:3000
+        // pcurl set --secret token eyJ...
+        Some(Commands::Set {
+            key,
+            value,
+            secret,
+            file,
+        }) => {
+            set_variable(&key, &value, secret, file.as_deref());
+        }
+
+        // pcurl unset token --secret
+        Some(Commands::Unset { key, secret, file }) => {
+            unset_variable(&key, secret, file.as_deref());
         }
 
         // pcurl ws wss://echo.websocket.org
@@ -150,9 +209,24 @@ fn main() {
         }
     }
 
-    // ── Check for updates (silent notification) ───────────────────────
-    // This now happens only if no other command/flag took precedence
-    check_for_update_notification();
+    // ── No network unless the user asked for it ───────────────────────
+}
+
+/// `--version` is the only place pcurl talks to GitHub, and only because the
+/// user asked about versions.
+fn print_version() {
+    let current = env!("CARGO_PKG_VERSION");
+    println!("pcurl {}", current);
+
+    if let Ok(latest) = check_latest_version() {
+        if is_newer(&latest, current) {
+            println!(
+                "{} newer release available: {} (run `pcurl --update`)",
+                "⚠️".yellow(),
+                latest.green()
+            );
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -169,8 +243,49 @@ fn is_safe_url(url: &str) -> bool {
         || url.starts_with("file://")
 }
 
+/// Variables from the collection and the secrets file, for ad-hoc commands.
+fn collection_vars() -> Vec<(String, String)> {
+    let col = Collection::load(&collection_path(None)).unwrap_or_default();
+    merged_variables(&col, None, &[]).unwrap_or_default()
+}
+
+/// First `{{name}}` in the command, if any.
+fn unresolved_variable(text: &str) -> Option<&str> {
+    let start = text.find("{{")? + 2;
+    let end = text[start..].find("}}")?;
+    Some(text[start..start + end].trim())
+}
+
+/// Warns about a `{{name}}` that no variable defines: it reaches the server
+/// literally and usually looks like an auth failure.
+fn warn_unresolved(command: &str, vars: &[(String, String)]) {
+    let Some(name) = unresolved_variable(command) else {
+        return;
+    };
+    if vars.iter().any(|(key, _)| key == name) {
+        return;
+    }
+    eprintln!(
+        "{} '{{{{{}}}}}' is not defined — sent literally. Define it with `pcurl set {} <value>`",
+        "!".yellow().bold(),
+        name,
+        name
+    );
+}
+
 fn run_http_argument_mode(command_str: &str, mode: &OutputMode) -> u16 {
-    let parsed = CurlCommand::parse(command_str);
+    // Skip the file I/O when the command has no placeholders.
+    let vars = if command_str.contains("{{") {
+        collection_vars()
+    } else {
+        Vec::new()
+    };
+    run_http_with_vars(command_str, &vars, mode)
+}
+
+fn run_http_with_vars(command_str: &str, vars: &[(String, String)], mode: &OutputMode) -> u16 {
+    warn_unresolved(command_str, vars);
+    let parsed = CurlCommand::parse_with_vars(command_str, vars);
 
     if !parsed.url.is_empty() && !is_safe_url(&parsed.url) {
         eprintln!(
@@ -281,9 +396,18 @@ fn auth_headers(vars: &[(String, String)]) -> Vec<String> {
 fn parse_cli_vars(vars: &[String]) -> Result<Vec<(String, String)>, String> {
     vars.iter()
         .map(|v| {
-            v.split_once('=')
-                .map(|(k, val)| (k.trim().to_string(), val.trim().to_string()))
-                .ok_or_else(|| format!("--var expects KEY=VALUE, got '{}'", v))
+            let (key, value) = v
+                .split_once('=')
+                .ok_or_else(|| format!("--var expects KEY=VALUE, got '{}'", v))?;
+            // A newline would let the value start a new HTTP header once it is
+            // substituted (curl forwards it), so refuse it here.
+            if value.contains(['\n', '\r']) {
+                return Err(format!(
+                    "--var '{}' contains a newline; values must fit on one line",
+                    key.trim()
+                ));
+            }
+            Ok((key.trim().to_string(), value.trim().to_string()))
         })
         .collect()
 }
@@ -311,7 +435,7 @@ fn request_targets<'a>(
         Some(name) => match col.get(name) {
             Some(r) => Ok(vec![r]),
             None => {
-                let names: Vec<&str> = col.requests.iter().map(|r| r.name.as_str()).collect();
+                let names: Vec<String> = col.requests.iter().map(|r| r.label()).collect();
                 let available = if names.is_empty() {
                     "(none)".to_string()
                 } else {
@@ -357,23 +481,22 @@ fn run_collection(
     let mut errors = 0usize;
 
     for (index, req) in targets.iter().enumerate() {
-        let label = match &req.group {
-            Some(g) => format!("{} / {}", g, req.name),
-            None => req.name.clone(),
-        };
-        display::display_request_header(index + 1, total, &label);
+        display::display_request_header(index + 1, total, &req.label());
 
-        let body = collection::substitute(&req.curl, &merged);
+        // MCP lines are split on whitespace, so they need the raw substitution.
+        // Curl lines are substituted per token later, so a value with quotes
+        // cannot add flags.
+        let substituted = collection::substitute(&req.curl, &merged);
 
-        let status = if let Some((url, method, params)) = mcp_parts(&body) {
+        let status = if let Some((url, method, params)) = mcp_parts(&substituted) {
             run_mcp_request(&url, &method, &params, &auth_headers(&merged), mode)
         } else {
-            let cmd = if body.trim_start().starts_with("curl") {
-                body
+            let cmd = if req.curl.trim_start().starts_with("curl") {
+                req.curl.clone()
             } else {
-                format!("curl -si {}", body)
+                format!("curl -si {}", req.curl)
             };
-            run_http_argument_mode(&cmd, mode)
+            run_http_with_vars(&cmd, &merged, mode)
         };
 
         if (200..300).contains(&status) {
@@ -393,6 +516,18 @@ fn run_collection(
     }
 }
 
+/// Method shown by `list`: `MCP` for mcp lines, else `-X` or POST/GET, the same
+/// rule pcurl uses to label a request.
+fn request_method(request: &str) -> String {
+    if mcp_parts(request).is_some() {
+        return "MCP".to_string();
+    }
+    let parsed = CurlCommand::parse(request);
+    parsed
+        .method
+        .unwrap_or_else(|| if parsed.data.is_some() { "POST" } else { "GET" }.to_string())
+}
+
 fn list_collection(file: &str) {
     let col = match Collection::load(file) {
         Ok(c) => c,
@@ -408,6 +543,12 @@ fn list_collection(file: &str) {
             "secrets".dimmed(),
             collection::SECRETS_FILE.dimmed()
         );
+    }
+
+    // Only the collection's own variables: secrets are never loaded here, so
+    // their values cannot leak into terminal output.
+    for (key, value) in &col.variables {
+        println!("  {} {}", format!("@{} =", key).cyan(), value.dimmed());
     }
 
     if col.requests.is_empty() {
@@ -428,20 +569,102 @@ fn list_collection(file: &str) {
                 println!("\n{}", g.cyan().bold());
             }
         }
-        println!("  {}", req.name);
+        println!(
+            "  {} {}",
+            format!("{:<6}", request_method(&req.curl)).dimmed(),
+            req.label()
+        );
     }
 
     println!();
-    println!(
-        "{} {}",
-        "run one:".dimmed(),
-        format!("pcurl run {} --only \"<name>\"", file).cyan()
-    );
+    let hint = if file == collection::COLLECTION_FILE {
+        "pcurl call \"<name>\"".to_string()
+    } else {
+        format!("pcurl call \"<name>\" --file {}", file)
+    };
+    println!("{} {}", "run one:".dimmed(), hint.cyan());
 }
 
-fn save_request(name: &str, curl: &str, file: &str) {
-    match collection::append_request(file, name, curl) {
-        Ok(()) => println!("{} saved '{}' to {}", "✓".green().bold(), name, file),
+fn save_request(name: &str, curl: &str, group: Option<&str>, file: &str) {
+    let curl = if curl == "-" {
+        // `pcurl save name - <<'EOF'` keeps the heredoc body multi-line and literal.
+        let mut body = String::new();
+        if let Err(e) = io::stdin().read_to_string(&mut body) {
+            fail(&format!("cannot read the curl from stdin: {}", e));
+        }
+        body.trim_end().to_string()
+    } else {
+        curl.to_string()
+    };
+
+    match collection::upsert_request(file, name, &curl, group) {
+        Ok(replaced) => {
+            let verb = if replaced { "updated" } else { "saved" };
+            println!("{} {} '{}' in {}", "✓".green().bold(), verb, name, file);
+        }
+        Err(e) => fail(&e),
+    }
+}
+
+fn remove_request(name: &str, file: &str) {
+    match collection::remove_request(file, name) {
+        Ok(0) => fail(&format!("no request named '{}' in '{}'", name, file)),
+        Ok(count) => println!(
+            "{} removed '{}' from {} ({} block{})",
+            "✓".green().bold(),
+            name,
+            file,
+            count,
+            if count == 1 { "" } else { "s" }
+        ),
+        Err(e) => fail(&e),
+    }
+}
+
+/// Where `set`/`unset` write: the explicit file, the secrets, or the collection.
+fn variable_target(file: Option<&str>, secret: bool) -> String {
+    match file {
+        Some(path) => path.to_string(),
+        None if secret => collection::SECRETS_FILE.to_string(),
+        None => collection_path(None),
+    }
+}
+
+fn set_variable(key: &str, value: &str, secret: bool, file: Option<&str>) {
+    let key = key.trim_start_matches('@');
+    // A newline would break the `@key = value` line and, once substituted, let
+    // the value start a new HTTP header.
+    if value.contains(['\n', '\r']) {
+        fail("values cannot contain newlines; the file format is one line per variable");
+    }
+    let path = variable_target(file, secret);
+    if !Path::new(&path).exists() {
+        fail(&format!("no file at '{}' — run `pcurl init` first", path));
+    }
+
+    match collection::upsert_variable(&path, key, value) {
+        Ok(replaced) => {
+            let verb = if replaced { "updated" } else { "added" };
+            println!("{} {} @{} in {}", "✓".green().bold(), verb, key, path);
+        }
+        Err(e) => fail(&e),
+    }
+}
+
+fn unset_variable(key: &str, secret: bool, file: Option<&str>) {
+    let key = key.trim_start_matches('@');
+    let path = variable_target(file, secret);
+
+    match collection::remove_variable(&path, key) {
+        Ok(0) => fail(&format!("@{} is not defined in '{}'", key, path)),
+        Ok(count) => println!(
+            "{} removed @{} from {} ({} line{})",
+            "✓".green().bold(),
+            key,
+            path,
+            count,
+            if count == 1 { "" } else { "s" }
+        ),
         Err(e) => fail(&e),
     }
 }
@@ -860,19 +1083,27 @@ fn execute_curl_and_stream(
 fn run_pipe_mode(mode: &OutputMode) {
     const MAX_INPUT_SIZE: usize = 50 * 1024 * 1024; // 50 MB
 
-    let mut input = String::new();
+    // Read bytes, not a String: a binary body (an image, a gzip) must not panic.
+    let mut raw = Vec::new();
     let mut reader = io::stdin().take((MAX_INPUT_SIZE + 1) as u64);
-    let bytes_read = reader
-        .read_to_string(&mut input)
-        .expect("Error reading stdin");
-
-    if bytes_read > MAX_INPUT_SIZE {
-        eprintln!("  {} Input exceeds 50MB limit, truncating", "⚠️".yellow());
-        input.truncate(MAX_INPUT_SIZE);
+    if let Err(e) = reader.read_to_end(&mut raw) {
+        fail(&format!("cannot read from stdin: {}", e));
     }
 
+    if raw.len() > MAX_INPUT_SIZE {
+        eprintln!("  {} Input exceeds 50MB limit, truncating", "⚠️".yellow());
+        raw.truncate(MAX_INPUT_SIZE);
+    }
+    if std::str::from_utf8(&raw).is_err() {
+        eprintln!(
+            "  {} response is not valid UTF-8 — showing it with replacement characters",
+            "⚠️".yellow()
+        );
+    }
+
+    let input = String::from_utf8_lossy(&raw);
     println!();
-    display_response(&input, 0, mode);
+    display_response(input.as_ref(), 0, mode);
 }
 
 async fn run_websocket_async(url: &str, verbose: bool, mode: &OutputMode) {
@@ -1028,5 +1259,12 @@ mod tests {
     fn test_parse_headers_validates_colon() {
         assert!(crate::parse_headers(&["A: b".to_string()]).is_ok());
         assert!(crate::parse_headers(&["sin-dos-puntos".to_string()]).is_err());
+    }
+
+    #[test]
+    fn test_parse_cli_vars_rejects_newlines() {
+        assert!(crate::parse_cli_vars(&["k=v".to_string()]).is_ok());
+        assert!(crate::parse_cli_vars(&["k=a\nInjected: yes".to_string()]).is_err());
+        assert!(crate::parse_cli_vars(&["k=a\r\nb".to_string()]).is_err());
     }
 }

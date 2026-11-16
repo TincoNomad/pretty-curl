@@ -104,6 +104,14 @@ jobs:
           cp artifacts/pcurl-windows-x64.exe/pcurl.exe  upload/pcurl-windows-x64.exe || true
           ls -la upload/
 
+      # The installer verifies these before running the binary, so a tampered
+      # asset cannot be installed silently.
+      - name: Generate checksums
+        run: |
+          cd upload
+          sha256sum pcurl-* > SHA256SUMS
+          cat SHA256SUMS
+
       - name: Create Release
         run: |
           gh release create ${{ github.ref_name }} \
@@ -112,6 +120,7 @@ jobs:
             upload/pcurl-macos-x64 \
             upload/pcurl-macos-arm64 \
             upload/pcurl-windows-x64.exe \
+            upload/SHA256SUMS \
             --generate-notes
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

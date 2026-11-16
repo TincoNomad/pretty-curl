@@ -1,6 +1,6 @@
 # pcurl
 
-HTTP pretty-printer for your terminal. Takes raw `curl` output and makes it readable — like Postman or Bruno, but without leaving your terminal. Also runs plain-text collections (`pcurl run`) and MCP servers (`pcurl mcp`).
+HTTP pretty-printer for your terminal. Takes raw `curl` output and makes it readable — like Postman or Bruno, but without leaving your terminal. Also manages and runs plain-text collections (`pcurl save`, `pcurl call`, `pcurl run`) and MCP servers (`pcurl mcp`).
 
 ```
   ✓  HTTP/2 200 OK    142ms
@@ -37,6 +37,7 @@ The installer automatically detects:
 - Linux (x64, ARM64)
 - macOS (Intel, Apple Silicon)
 - Downloads correct binary from GitHub Releases
+- Verifies the download against the release's `SHA256SUMS` and aborts on a mismatch
 - Fallback to compilation if no binary available
 
 ### Option 2 — Manual Download
@@ -95,6 +96,10 @@ pcurl 'curl -u user:password https://api.example.com/private'
 pcurl https://api.example.com/users/1
 ```
 
+Argument mode also substitutes `{{name}}` from the collection and
+`secrets.env`, so you can reuse `@base` and `@token` without saving anything —
+see [Ad-hoc requests](#ad-hoc-requests-can-use-the-same-variables).
+
 **Pipe mode** — execute `curl` yourself and pipe output:
 
 ```bash
@@ -103,6 +108,9 @@ curl -si -X DELETE https://api.example.com/users/42 | pcurl
 ```
 
 > `-s` silences progress bar, `-i` includes headers in stdout.
+
+Binary or non-UTF-8 output is shown with replacement characters instead of
+failing, so piping an image or a `.gz` won't crash pcurl.
 
 **Global flags** (work in any HTTP mode):
 
@@ -122,7 +130,10 @@ Group your requests in a plain-text file and stop retyping curl commands.
 
 ```bash
 pcurl init            # creates .pcurl/ in the current project
-pcurl list            # see what's inside
+pcurl set base http://localhost:3000
+pcurl save "health" 'curl {{base}}/health'
+pcurl list            # see what's inside, with its method
+pcurl call health     # run that one
 pcurl run             # run everything
 ```
 
@@ -153,17 +164,54 @@ curl {{base}}/users/1 -H "Authorization: Bearer {{token}}"
 curl -X POST {{base}}/users -d '{"name":"Juan"}'
 ```
 
-- `###` starts a named request, `##` a group (label only), `@name = value` a variable, `#` a comment.
+- `###` starts a named request, `##` a group, `@name = value` a variable, `#` a comment.
 - A request's curl may span several lines with a trailing `\`.
 - A request can also be an MCP call: `mcp <url> <method> <json>`.
+- A repeated `@name` line: the **last** one wins, the same as `git config --get`.
+
+Groups are a reading label, and also a prefix `call` understands: `list` prints
+each request as `group/name`, and that is a valid name to run. They are not
+separate files — everything lives in one collection.
 
 ```bash
 pcurl list                                          # show what's inside
 pcurl run                                           # run everything
 pcurl run --only "get user"                         # run a single request
+pcurl call "Usuarios/get user"                      # same, by the name `list` prints
 pcurl run --var base=http://localhost:9999          # override one variable
-pcurl save "get user" 'curl https://api.example.com/users/1'   # append a request
+pcurl save "get user" 'curl https://api.example.com/users/1'   # append or update a request
+pcurl save --group Auth "login" - <<'EOF'           # ...or paste it multi-line into a group
+curl -X POST {{base}}/auth/login -d '{
+  "email": "{{email}}"
+}'
+EOF
+pcurl rm "get user"                                 # delete a request
+pcurl set base http://localhost:3000                # write @base into the collection
+pcurl set --secret token eyJhbGciOi...              # write @token into secrets.env
+pcurl unset token --secret                          # remove a variable
 ```
+
+`pcurl list` output shows the method and the name you can paste into `call`:
+
+```text
+collection .pcurl/collection.pcurl
+  @base = http://localhost:3000
+
+Usuarios
+  GET    Usuarios/get user
+  POST   Usuarios/create user
+```
+
+`save -` reads the curl from stdin, so a heredoc keeps the body multi-line and
+literal (`<<'EOF'` stops the shell from expanding anything). Saving a name that
+already exists **updates that block in place**, so `call` can never run a stale
+duplicate. `--group` puts the request at the end of that group, creating it at
+the bottom when missing.
+
+`set` never duplicates a key: running it twice updates the same line, and a new
+key joins the existing block of `@` lines. `unset` removes every line for that
+key. Values printed by `list` come from the collection only, so a secret's value
+is never echoed.
 
 The file is resolved as: explicit path → `.pcurl/collection.pcurl` → `./pcurl.collection`.
 
@@ -184,6 +232,20 @@ pcurl run --env staging.env
 ```
 
 Resolution order: collection variables → secrets (or `--env`) → `--var`.
+
+#### Ad-hoc requests can use the same variables
+
+A curl passed straight to pcurl is substituted too, so `@base` and `@token` work
+without saving anything:
+
+```bash
+pcurl "{{base}}/auth/login -d '{\"email\":\"a@b.com\",\"password\":\"12345678\"}'"
+pcurl "{{base}}/auth/logout -H \"Authorization: Bearer {{token}}\""
+```
+
+The collection file is resolved from the current directory, so run it from the
+project root. A `{{name}}` that is not defined is reported on stderr instead of
+being sent literally.
 
 #### MCP requests inside a collection
 
@@ -257,6 +319,10 @@ pcurl mcp --verbose http://localhost:8080/mcp/message tools/call '{"name":"test"
 pcurl mcp --header "Authorization: Bearer <token>" https://api.example.com/mcp/message tools/list '{}'
 ```
 
+The URL is the **message** endpoint (`.../mcp/message`), not the SSE one. pcurl
+derives `/mcp/sse` from it by replacing `/mcp/message` in the path, so a URL
+without that segment will time out after 10s.
+
 Features:
 - **Full protocol cycle**: connects to `/mcp/sse`, obtains `session_id`, sends `initialize`, then your method
 - **JSON-RPC body** constructed automatically via `serde_json` (proper escaping, no injection)
@@ -290,9 +356,13 @@ Example flow with `--verbose`:
 |---|---|
 | `pcurl [FLAGS] [curl_command]` | HTTP mode (arg or pipe) |
 | `pcurl init` | Create `.pcurl/` (collection + secrets folder) in the current project |
-| `pcurl run [file] [--only <name>] [--env <file>] [--var k=v]` | Run a collection (default: `.pcurl/collection.pcurl`) |
-| `pcurl list [file]` | List the requests in a collection |
-| `pcurl save <name> "<curl…>" [--file <path>]` | Append a request to a collection |
+| `pcurl run [file] [--only <name>] [--env <file>] [--var k=v]` | Run a collection; `--only` accepts `name` or `group/name` |
+| `pcurl call <name> [--env <file>] [--var k=v] [--file <path>]` | Run one saved request by name (`name` or `group/name`) |
+| `pcurl list [file]` | List the requests with their method, as `group/name` |
+| `pcurl save <name> "<curl…>" [--group <g>] [--file <path>]` | Save a request, or update it if the name exists (`-` reads the curl from stdin) |
+| `pcurl rm <name> [--file <path>]` | Delete a saved request (every block with that name) |
+| `pcurl set <key> <value> [--secret] [--file <path>]` | Write `@key = value` into the collection (or secrets) |
+| `pcurl unset <key> [--secret] [--file <path>]` | Remove `@key` from the collection (or secrets) |
 | `pcurl ws <url> [--verbose]` | WebSocket native mode |
 | `pcurl wscat -c <url> [--verbose]` | wscat-compatible alias |
 | `pcurl mcp <url> <method> <params> [--header "K: V"] [--session-id <id>] [--verbose]` | MCP JSON-RPC call (full SSE cycle) |
@@ -311,6 +381,7 @@ Example flow with `--verbose`:
 | | pcurl | xh | HTTPie | curlie |
 |---|---|---|---|---|
 | Accepts literal curl commands | ✓ | ✗ | ✗ | partial |
+| Plain-text collections managed from the CLI | ✓ | ✗ | ✗ | ✗ |
 | WebSocket support | ✓ | ✗ | ✓ | ✗ |
 | Single binary, no runtime | ✓ | ✓ | ✗ | ✓ |
 | Written in | Rust | Rust | Python | Go |
@@ -323,12 +394,12 @@ support WebSocket and requires learning its own request format.
 
 ## Self-Update
 
-`pcurl` checks for newer versions automatically:
+pcurl never talks to the network on its own — no background check, no phone
+home, nothing added to the latency of a command:
 
-- **After each successful run** (HTTP, WebSocket, MCP): a silent check runs and prints a notice if a newer release exists
-- **`--version` / `--help`**: print and exit immediately — no update check
-- **`--update`**: Runs the installer to update to the latest release
-- **`--doctor`**: Diagnoses installation issues (binary location, PATH, curl dependency, connectivity)
+- **`--version` / `-V`**: prints the version and, if a newer release exists, one line telling you to update. This is the only place pcurl contacts GitHub during normal use, and it gives up after 2 seconds.
+- **`--update`**: runs the installer to fetch the latest release. The installer is downloaded from the release **tag**, not from `main`, and checked binaries are verified against the release's `SHA256SUMS`.
+- **`--doctor`**: diagnoses installation issues (binary location, PATH, curl dependency, connectivity).
 
 ---
 
@@ -336,10 +407,11 @@ support WebSocket and requires learning its own request format.
 
 ⚠️ **This tool is designed for local development and testing only.**
 
-- **Auto-update**: Downloads and executes code from GitHub. If you don't trust this, use manual download or compile from source.
+- **Auto-update**: `--update` downloads the installer from the release tag and runs it; the installer verifies the binary against the release's `SHA256SUMS` and aborts on a mismatch. If you don't trust any of this, use manual download or compile from source.
+- **Dependencies**: checked with `cargo audit` in CI, so a known advisory fails the build instead of shipping.
 - **Pipe mode**: `pcurl` only reads from stdin and displays output — it does not execute arbitrary code.
 - **Argument mode**: Passes arguments directly to `curl`. Be careful with untrusted input.
-- **Secrets**: keep API keys in `.pcurl/secrets/secrets.env`. `pcurl init` writes a `.gitignore` with `*` inside that folder, so git ignores it even if your project has no rule.
+- **Secrets**: keep API keys in `.pcurl/secrets/secrets.env`. `pcurl init` writes a `.gitignore` with `*` inside that folder, so git ignores it even if your project has no rule. The file itself is **plain text on disk** — it is not encrypted, and `pcurl` does not ask for a passphrase.
 - **For production use**: Review the code and consider security implications before use in sensitive environments.
 
 ### Safe Usage Guidelines
@@ -357,7 +429,7 @@ PRs welcome. Code structure:
 
 - `src/main.rs` — Entry point, CLI dispatch (clap), curl execution
 - `src/cli.rs` — CLI definitions (clap derive structs)
-- `src/collection.rs` — Plain-text request collections (parsing, variables, save)
+- `src/collection.rs` — Plain-text request collections (parsing, variables, `set`/`save`/`rm`, group-qualified lookup)
 - `src/curl_parser.rs` — curl command tokenization and reconstruction
 - `src/display.rs` — HTTP response parsing and display (status, headers, body, JSON, XML)
 - `src/mcp.rs` — MCP legacy helpers (JSON-RPC body, session persistence)
@@ -365,3 +437,17 @@ PRs welcome. Code structure:
 - `src/ws_client.rs` — WebSocket client implementation
 - `src/version.rs` — Version checking and self-update
 - `src/help.rs` — Doctor diagnostic
+
+---
+
+## Buy me a coffee
+
+If pcurl saves you time, you can send USDC on Polygon:
+
+```text
+0x829eA0c8F745dd461144443E050c6cf00a58D72b
+```
+
+Network: **Polygon PoS** · Token: **USDC** · [verify on Polygonscan](https://polygonscan.com/address/0x829eA0c8F745dd461144443E050c6cf00a58D72b)
+
+Check both the network and the token before sending — anything sent on a different chain may be lost.

@@ -10,10 +10,11 @@ use clap::{Parser, Subcommand};
 #[command(
     name = "pcurl",
     version,                          // reads version from Cargo.toml automatically
+    disable_version_flag = true,      // --version is handled in main so it can also check for updates
     author,
     about,
     long_about = None,
-    after_help = "EXAMPLES:\n  pcurl 'curl https://api.example.com/users/1'\n  pcurl 'curl -X POST https://api.example.com/users -H \"Content-Type: application/json\" -d \\'{}\\'\n  curl -si https://api.example.com/users | pcurl\n  pcurl init\n  pcurl run --only \"health\"\n  pcurl list\n  pcurl save \"get user\" 'curl https://api.example.com/users/1'\n  pcurl ws ws://localhost:8080/chat\n  pcurl mcp http://localhost:8080/mcp/message tools/call '{\"name\":\"test\"}'",
+    after_help = "EXAMPLES:\n  pcurl 'curl https://api.example.com/users/1'\n  pcurl 'curl -X POST https://api.example.com/users -H \"Content-Type: application/json\" -d \\'{}\\'\n  curl -si https://api.example.com/users | pcurl\n  pcurl init\n  pcurl set base http://localhost:3000\n  pcurl set --secret token eyJhbGciOi...\n  pcurl run --only \"health\"\n  pcurl list\n  pcurl save \"get user\" 'curl https://api.example.com/users/1'\n  pcurl ws ws://localhost:8080/chat\n  pcurl mcp http://localhost:8080/mcp/message tools/call '{\"name\":\"test\"}'",
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -38,6 +39,10 @@ pub struct Cli {
     /// Check installation and dependencies
     #[arg(long)]
     pub doctor: bool,
+
+    /// Print the version and check whether a newer release exists
+    #[arg(short = 'V', long)]
+    pub version: bool,
 
     /// Update pcurl to the latest available version
     #[arg(long)]
@@ -77,15 +82,78 @@ pub enum Commands {
         file: Option<String>,
     },
 
-    /// Save a curl command as a named request in a collection file
+    /// Run a single saved request by name (shortcut for `run --only`)
+    Call {
+        /// Request name, exactly as `pcurl list` shows it
+        name: String,
+
+        /// Environment file with `@name = value` lines
+        #[arg(long)]
+        env: Option<String>,
+
+        /// Override a variable (repeatable): --var key=value
+        #[arg(long = "var", value_name = "KEY=VALUE")]
+        vars: Vec<String>,
+
+        /// Collection file (default: .pcurl/collection.pcurl, then ./pcurl.collection)
+        #[arg(long)]
+        file: Option<String>,
+    },
+
+    /// Save a curl command as a named request (updates it if the name exists)
     Save {
         /// Name of the request
         name: String,
 
-        /// The curl command (quote it)
+        /// The curl command (quote it, or use - to read it from stdin)
         curl: String,
 
+        /// Group to place the request under (created at the bottom if missing)
+        #[arg(long)]
+        group: Option<String>,
+
         /// Collection file to append to
+        #[arg(long)]
+        file: Option<String>,
+    },
+
+    /// Remove a saved request by name
+    Rm {
+        /// Request name, exactly as `pcurl list` shows it
+        name: String,
+
+        /// Collection file (default: .pcurl/collection.pcurl, then ./pcurl.collection)
+        #[arg(long)]
+        file: Option<String>,
+    },
+
+    /// Set a collection variable (or a secret with --secret)
+    Set {
+        /// Variable name; a leading @ is accepted and ignored
+        key: String,
+
+        /// Value
+        value: String,
+
+        /// Write to .pcurl/secrets/secrets.env instead of the collection
+        #[arg(long)]
+        secret: bool,
+
+        /// Target file (default: the collection, or the secrets with --secret)
+        #[arg(long)]
+        file: Option<String>,
+    },
+
+    /// Remove a variable from the collection (or a secret with --secret)
+    Unset {
+        /// Variable name; a leading @ is accepted and ignored
+        key: String,
+
+        /// Remove from .pcurl/secrets/secrets.env instead of the collection
+        #[arg(long)]
+        secret: bool,
+
+        /// Target file (default: the collection, or the secrets with --secret)
         #[arg(long)]
         file: Option<String>,
     },

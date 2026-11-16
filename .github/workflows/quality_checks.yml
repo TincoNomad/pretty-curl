@@ -36,6 +36,11 @@ jobs:
       - name: Run Clippy
         run: cargo clippy -- -D warnings
 
+      - name: Audit dependencies
+        run: |
+          cargo install cargo-audit --locked || true
+          cargo audit
+
       - name: Run tests
         run: cargo test
 

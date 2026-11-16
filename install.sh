@@ -13,7 +13,7 @@ print_banner() {
   echo -e "\033[90m│\033[96m\033[1m █▀▀ █ █ █▀▄ █           \033[0m\033[90m│\033[0m"
   echo -e "\033[90m│\033[96m\033[1m █   █ █ █▀▄ █           \033[0m\033[90m│\033[0m"
   echo -e "\033[90m│\033[96m\033[1m ▀▀▀ ▀▀▀ ▀ ▀ ▀▀▀         \033[0m\033[90m│\033[0m"
-  echo -e "\033[90m└──────────────── v1.5.0 ┘\033[0m"
+  echo -e "\033[90m└──────────────── v1.6.0 ┘\033[0m"
   echo ""
 }
 
@@ -69,6 +69,43 @@ detect_platform() {
   esac
 }
 
+# SHA-256 of a file, with whichever tool the system has
+sha256_of() {
+  if command -v sha256sum &>/dev/null; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum &>/dev/null; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    openssl dgst -sha256 "$1" | awk '{print $NF}'
+  fi
+}
+
+# Compare the downloaded binary against the SHA256SUMS published in the release.
+# Skipped with a warning when the release predates checksums.
+verify_checksum() {
+  local asset_name="$1"
+  local file="$2"
+  local sums_url="https://github.com/$REPO/releases/latest/download/SHA256SUMS"
+  local expected
+  expected=$(curl -fsSL "$sums_url" 2>/dev/null | awk -v a="$asset_name" '$2 == a || $2 == "*"a {print $1}' | head -1)
+
+  if [ -z "$expected" ]; then
+    echo "  ⚠️  No SHA256SUMS in this release — skipping checksum verification"
+    return 0
+  fi
+
+  local actual
+  actual=$(sha256_of "$file")
+  if [ "$expected" != "$actual" ]; then
+    echo "  ❌ Checksum mismatch for $asset_name"
+    echo "     expected: $expected"
+    echo "     actual:   $actual"
+    rm -f "$file"
+    exit 1
+  fi
+  echo "  ✅ Checksum verified"
+}
+
 # Descargar binario precompilado
 download_binary() {
   local version=$(curl -s "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
@@ -87,6 +124,8 @@ download_binary() {
     echo "    Check: https://github.com/$REPO/releases"
     exit 1
   fi
+
+  verify_checksum "$asset_name" "$INSTALL_DIR/$BINARY"
   
   chmod +x "$INSTALL_DIR/$BINARY"
 }
