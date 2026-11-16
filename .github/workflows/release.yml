@@ -46,7 +46,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.99.0
         with:
           targets: ${{ matrix.target }}
 
@@ -114,6 +114,11 @@ jobs:
 
       - name: Create Release
         run: |
+          # A tag with a dash (v1.6.0-beta.1) is a pre-release, so `/releases/latest`
+          # keeps pointing at the previous stable release and the installer never
+          # picks up a beta.
+          PRE=""
+          case "${{ github.ref_name }}" in *-*) PRE="--prerelease" ;; esac
           gh release create ${{ github.ref_name }} \
             upload/pcurl-linux-x64 \
             upload/pcurl-linux-arm64 \
@@ -121,6 +126,6 @@ jobs:
             upload/pcurl-macos-arm64 \
             upload/pcurl-windows-x64.exe \
             upload/SHA256SUMS \
-            --generate-notes
+            --generate-notes $PRE
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
