@@ -190,7 +190,12 @@ fn main() {
                     } else {
                         format!("curl -si {}", cmd)
                     };
-                    run_http_argument_mode(&curl_cmd, &output_mode);
+                    // 0 means curl never produced an HTTP response (connection
+                    // refused, DNS failure), so the shell must see a failure. An
+                    // HTTP error status like 404 keeps exit 0, like curl without -f.
+                    if run_http_argument_mode(&curl_cmd, &output_mode) == 0 {
+                        std::process::exit(1);
+                    }
                 }
 
                 // Pipe mode: curl -si ... | pcurl
@@ -513,6 +518,12 @@ fn run_collection(
             "{}",
             format!("{} requests · {} OK · {} {}", total, ok, errors, err_label).dimmed()
         );
+    }
+
+    // Every request already ran; the exit code only reports that some failed,
+    // the way `cargo test` does. Only `run` and `call` reach this point.
+    if errors > 0 {
+        std::process::exit(1);
     }
 }
 

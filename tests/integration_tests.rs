@@ -915,3 +915,83 @@ fn test_mcp_sse_cycle() {
         "tool content was not unwrapped: {stdout}"
     );
 }
+
+/// A local port with nothing listening on it, so curl fails to connect.
+fn closed_port() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind a free port");
+    listener.local_addr().unwrap().port()
+}
+
+#[test]
+fn test_exit_code_fails_when_curl_cannot_connect() {
+    let output = Command::new("./target/debug/pcurl")
+        .env("PCURL_TEST_MODE", "1")
+        .arg(format!("curl http://127.0.0.1:{}/", closed_port()))
+        .output()
+        .expect("failed to run pcurl");
+
+    assert!(
+        !output.status.success(),
+        "no response must not report success: {:?}",
+        output.status
+    );
+}
+
+#[test]
+fn test_exit_code_stays_zero_for_an_http_error_status() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    let server = thread::spawn(move || {
+        if let Some(Ok(mut stream)) = listener.incoming().next() {
+            let mut buf = [0; 4096];
+            let _ = stream.read(&mut buf);
+            let response =
+                "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\nnope\n";
+            stream.write_all(response.as_bytes()).unwrap();
+            stream.flush().unwrap();
+        }
+    });
+
+    let output = Command::new("./target/debug/pcurl")
+        .env("PCURL_TEST_MODE", "1")
+        .arg(format!("curl -si http://127.0.0.1:{}/nope", port))
+        .output()
+        .expect("failed to run pcurl");
+
+    server.join().unwrap();
+
+    // A 404 is a response, not a failure: curl exits 0 without -f, so pcurl does too.
+    assert!(
+        output.status.success(),
+        "an HTTP error status is still an answer: {:?}",
+        output.status
+    );
+}
+
+#[test]
+fn test_call_exits_nonzero_when_the_saved_request_fails() {
+    let dir = std::env::temp_dir().join(format!("pcurl-exit-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("api.pcurl");
+    std::fs::write(
+        &file,
+        format!("### dead\ncurl http://127.0.0.1:{}/\n", closed_port()),
+    )
+    .unwrap();
+
+    let output = Command::new("./target/debug/pcurl")
+        .args(["call", "dead", "--file"])
+        .arg(&file)
+        .output()
+        .expect("failed to run pcurl call");
+
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(
+        !output.status.success(),
+        "a failing saved request must not report success: {:?}",
+        output.status
+    );
+}

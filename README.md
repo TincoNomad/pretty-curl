@@ -374,6 +374,22 @@ Example flow with `--verbose`:
 | `--version` / `-V` | Show version |
 | `--help` / `-h` | Show help |
 
+### Exit codes
+
+pcurl exits `0` when it could do its job and `1` when it could not. The HTTP
+status is data, not a failure: a `500` prints like any other response. What
+counts as a failure depends on how you use it:
+
+| Mode | Exit `1` when |
+|---|---|
+| `pcurl 'curl …'` / pipe | curl produced no HTTP response at all (refused, DNS failure) |
+| `pcurl call` / `pcurl run` | any request failed — no response **or** a status outside `2xx` |
+
+`run` and `call` behave like a test runner: every request still runs (a failure
+does not abort the rest), and the exit code at the end says whether all of them
+succeeded, so the command can gate a CI step. Ad-hoc mode behaves like `curl`
+without `-f`, where a `404` is a valid answer worth reading.
+
 ---
 
 ## Why pcurl vs alternatives
@@ -443,6 +459,12 @@ PRs welcome. Code structure:
 ## Buy me a coffee
 
 If pcurl saves you time, you can send USDC on Polygon:
+
+<p align="center">
+  <img src="docs/donate-qr.webp" width="220" alt="USDC on Polygon QR">
+</p>
+
+Or copy the address:
 
 ```text
 0x829eA0c8F745dd461144443E050c6cf00a58D72b
