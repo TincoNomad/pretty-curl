@@ -53,7 +53,7 @@ pub fn update_pcurl() {
     // to the branch would otherwise get code run on every user's machine.
     let tag = check_latest_version().unwrap_or_else(|_| format!("v{}", env!("CARGO_PKG_VERSION")));
     let url = format!(
-        "https://raw.githubusercontent.com/TincoNomad/pretty-curl/{}/install.sh",
+        "https://github.com/TincoNomad/pretty-curl/releases/download/{}/install.sh",
         tag
     );
 
@@ -82,7 +82,10 @@ fn run_installer(url: &str) -> std::io::Result<bool> {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
-    let script = Command::new("curl").args(["-fsSL", url]).output()?;
+    // `-f` so a 404 never gets piped into bash as HTML.
+    let script = Command::new("curl")
+        .args(["-fsSL", "--proto", "=https", "--tlsv1.2", url])
+        .output()?;
     if !script.status.success() || script.stdout.is_empty() {
         return Ok(false);
     }

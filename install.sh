@@ -28,8 +28,10 @@ echo "     https://github.com/TincoNomad/pretty-curl#installation"
 echo ""
 
 # Pedir confirmación si hay terminal disponible (lee de /dev/tty para funcionar con pipe)
-if [[ -t 0 ]] || [[ -e /dev/tty ]]; then
-  read -p "  Continue with installation? (y/N) " -n 1 -r < /dev/tty
+# `-e /dev/tty` is true even where opening it fails (containers, CI), so probe
+# the open instead of the file.
+if [[ -t 0 ]] || (exec </dev/tty) 2>/dev/null; then
+  read -p "  Continue with installation? (y/N) " -n 1 -r < /dev/tty || REPLY="y"
   echo ""
   if [[ ! $REPLY =~ ^[Yy]$ ]]; then
     echo "  Installation cancelled."
@@ -208,15 +210,14 @@ add_to_path() {
 # Verificar PATH
 if ! echo "$PATH" | grep -q "$INSTALL_DIR"; then
   echo "  ⚠️  $INSTALL_DIR is not in your PATH."
-  if [[ -t 0 ]] || [[ -e /dev/tty ]]; then
-    read -p "  Add it automatically? Press Y to add, any other key to skip: " -n 1 -r < /dev/tty
+  if [[ -t 0 ]] || (exec </dev/tty) 2>/dev/null; then
+    read -p "  Add it automatically? Press Y to add, any other key to skip: " -n 1 -r < /dev/tty || REPLY=""
     echo ""
     if [[ $REPLY =~ ^[Yy]$ ]]; then
       add_to_path
-      # Obtener comando source correcto
-      local shell_info
+      # Obtener comando source correcto (top-level, so no `local`)
       shell_info=$(get_shell_info)
-      local source_cmd="${shell_info#*|}"
+      source_cmd="${shell_info#*|}"
       echo ""
       echo "  ✅ Installed successfully!"
       echo ""
@@ -234,9 +235,8 @@ if ! echo "$PATH" | grep -q "$INSTALL_DIR"; then
   else
     # Modo no-interactivo: agregar automáticamente
     add_to_path
-    local shell_info
     shell_info=$(get_shell_info)
-    local source_cmd="${shell_info#*|}"
+    source_cmd="${shell_info#*|}"
     echo ""
     echo "  ✅ Installed successfully!"
     echo ""

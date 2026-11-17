@@ -102,6 +102,7 @@ jobs:
           cp artifacts/pcurl-macos-x64/pcurl            upload/pcurl-macos-x64       || true
           cp artifacts/pcurl-macos-arm64/pcurl          upload/pcurl-macos-arm64     || true
           cp artifacts/pcurl-windows-x64.exe/pcurl.exe  upload/pcurl-windows-x64.exe || true
+          cp install.sh                                 upload/install.sh           || true
           ls -la upload/
 
       # The installer verifies these before running the binary, so a tampered
@@ -125,6 +126,7 @@ jobs:
             upload/pcurl-macos-x64 \
             upload/pcurl-macos-arm64 \
             upload/pcurl-windows-x64.exe \
+            upload/install.sh \
             upload/SHA256SUMS \
             --generate-notes $PRE
         env:

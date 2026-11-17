@@ -30,8 +30,13 @@ HTTP pretty-printer for your terminal. Takes raw `curl` output and makes it read
 **No Rust needed. Downloads precompiled binary for your system:**
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/TincoNomad/pretty-curl/main/install.sh | bash
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/TincoNomad/pretty-curl/releases/latest/download/install.sh | sh
 ```
+
+The installer downloads the release binary for your platform and verifies it
+against the release's `SHA256SUMS` before installing. `-f` makes a bad URL fail
+instead of piping a GitHub error page into `sh`.
 
 The installer automatically detects:
 - Linux (x64, ARM64)
