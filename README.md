@@ -78,6 +78,25 @@ sudo cp target/release/pcurl /usr/local/bin/
 
 ---
 
+## Did it work on your machine?
+
+I want to know whether the installer works outside my laptop: macOS Intel, Linux
+ARM, Windows, machines without Rust, machines with a bare PATH.
+
+1. `pcurl --version`
+2. `uname -sm` (on Windows, the version)
+3. [Open a report](https://github.com/TincoNomad/pretty-curl/issues/new?template=install-report.yml)
+   and paste both
+
+If something failed, also paste the full output of `pcurl --doctor`. It shows the
+binary path, whether `~/.local/bin` is on your PATH, your curl version and whether
+there is a connection, so I don't have to guess.
+
+Every case that fails I fix and add to the tests. A public list of which systems
+worked goes in the README, with your name if you want it, anonymous if you prefer.
+
+---
+
 ## Usage
 
 ### HTTP Mode

@@ -1,0 +1,67 @@
+name: Install report
+description: Tell me if pcurl installed and ran on your machine.
+title: "[install] <OS> <arch>"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Si prefieres escribir en español, adelante.
+
+        Esto me sirve para saber si el instalador funciona fuera de mi laptop:
+        macOS Intel, Linux ARM, Windows, máquinas sin Rust, máquinas con un PATH pelado.
+
+  - type: input
+    id: version
+    attributes:
+      label: Salida de `pcurl --version`
+      placeholder: pcurl 1.6.0
+    validations:
+      required: true
+
+  - type: input
+    id: system
+    attributes:
+      label: Sistema
+      description: Salida de `uname -sm`. En Windows, la versión.
+      placeholder: Darwin arm64
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: Instalación
+      options:
+        - ok
+        - falló
+    validations:
+      required: true
+
+  - type: dropdown
+    id: output
+    attributes:
+      label: Salida
+      description: ¿El `200` sale en verde, los headers alineados y el JSON indentado?
+      options:
+        - se ve bien
+        - se ve mal
+        - no lo corrí
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Si algo falló, pega aquí `pcurl --doctor`
+      description: Muestra la ruta del binario, si `~/.local/bin` está en tu PATH, tu versión de curl y si hay conexión.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Lo que quieras agregar
+      description: Qué proyecto lo estás usando, qué esperabas y qué pasó.
+    validations:
+      required: false
